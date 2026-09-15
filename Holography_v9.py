@@ -872,7 +872,7 @@ if GENERATE_APERTURE_SLICES:
         ax.set_xlim(-D/2 - 1, D/2 + 1)
         ax.set_ylim(-180, 180)
         ax.grid(True, linestyle='--', alpha=0.5)
-        filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m").replace(".", "_")
+        filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
         fig.tight_layout()
         save_figure(fig, os.path.join(output_dir, filename), dpi=150)
         plt.close(fig)
