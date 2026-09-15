@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -O3 -Wall -Wextra -pedantic
+CXXFLAGS ?= -std=c++11 -O3 -Wall -Wextra -pedantic
 ifeq ($(OS),Windows_NT)
   EXEEXT := .exe
 else
