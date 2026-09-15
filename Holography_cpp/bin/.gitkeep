@@ -1,0 +1,1 @@
+Build output directory. Executables are generated locally by `make` and are not committed.
