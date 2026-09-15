@@ -9,7 +9,7 @@ int main(int argc,char**argv) {
  try {
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")) {help();return 0;}
   std::string wd=arg(argc,argv,"--workdir","", ".");
-  if(!is_dir(wd)) throw std::runtime_error("workdir not found: "+wd.string());
+  if(!is_dir(wd)) throw std::runtime_error("workdir not found: "+wd);
   const bool only_corr=has_flag(argc,argv,"--only-corr"), only_fringe=has_flag(argc,argv,"--only-fringe");
   const bool only_frinz=has_flag(argc,argv,"--only-frinz")||has_flag(argc,argv,"--only-frinZ");
   const std::string raw=arg(argc,argv,"--raw-dir","", "raw");
@@ -20,15 +20,15 @@ int main(int argc,char**argv) {
   if(xml.empty()) throw std::runtime_error("No *_KL_X_step*.xml files found.");
   std::string rawdir=join(wd,raw), cordir=join(wd,cor); mkdir_p(cordir);
   if(!only_fringe&&!only_frinz) for(const auto& x:xml) {
-    std::string c="gico3 --schedule "+quote(x.string())+" --raw-file "+quote(rawdir.string())+" --cor-file "+quote(cordir.string());
+    std::string c="gico3 --schedule "+quote(x)+" --raw-file "+quote(rawdir)+" --cor-file "+quote(cordir);
     if(!cpu.empty()) c+=" --cpu "+cpu; if(run(c)!=0) return 2;
   }
   if(only_corr) return 0;
   const std::string processor=only_frinz?"frinZ":"fringe";
-  std::string out=wd/(only_frinz?"frinz_results":"fringe_results"); fs::create_directories(out);
+  std::string out=join(wd, only_frinz?"frinz_results":"fringe_results"); mkdir_p(out);
   for(const auto& corfile: files_matching(cordir,"",".cor")) {
     std::string result=capture(processor+" --in "+quote(corfile));
-    std::ofstream f(out/(stem(corfile)+"_output.txt")); f<<result;
+    std::ofstream f(join(out,stem(corfile)+"_output.txt")); f<<result;
   }
   std::cout<<"Results: "<<out<<"\n"; return 0;
  } catch(const std::exception&e){std::cerr<<"Error: "<<e.what()<<"\n";return 2;}
