@@ -322,6 +322,19 @@ static void write_gnuplot(const fs::path& out, const Options& o, double beam_pea
     map("aperture_phase.dat","aperture_phase.png","Aperture phase (tilt removed)","Phase [deg]",-180,180);
     map("surface_error.dat","surface_error.png","Surface error","Surface error [mm]",-SURFACE_LIMIT_MM,SURFACE_LIMIT_MM);
     if(o.polar) map("aperture_rtheta.dat","aperture_rtheta.png","Aperture field: angle-radius","Amplitude",0,ap_peak);
+    if (o.slice_beam) {
+        g<<"set output '"<<p("beam_slice_el0.png")<<"'\nset title 'Beam slice (El = 0)'\n"
+         <<"set xlabel 'Az offset [arcmin]'\nset ylabel 'Amplitude'\n"
+         <<"plot '"<<p("beam_slice_el0.dat")<<"' using 1:2 with lines lw 2\n";
+        g<<"set output '"<<p("beam_slice_el0_phase.png")<<"'\nset title 'Beam phase slice (El = 0)'\n"
+         <<"set xlabel 'Az offset [arcmin]'\nset ylabel 'Phase [deg]'\nset yrange [-180:180]\n"
+         <<"plot '"<<p("beam_slice_el0.dat")<<"' using 1:3 with lines lw 2\nunset yrange\n";
+    }
+    if (o.slice_aperture) {
+        g<<"set output '"<<p("aperture_slice_y0.png")<<"'\nset title 'Aperture phase slice (y = 0)'\n"
+         <<"set xlabel 'x [m]'\nset ylabel 'Phase [deg]'\nset yrange [-180:180]\n"
+         <<"plot '"<<p("aperture_slice_y0.dat")<<"' using 1:2 with lines lw 2\nunset yrange\n";
+    }
     g<<"unset output\n";
 }
 
