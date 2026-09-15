@@ -14,13 +14,39 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Iterator, TypeVar
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.interpolate import griddata
+
+
+T = TypeVar("T")
+
+
+def progress(items: Iterable[T], total: int, label: str = "Processing", width: int = 30) -> Iterator[T]:
+    """Yield items while drawing a dependency-free progress bar on stderr."""
+    started = time.monotonic()
+    for completed, item in enumerate(items, start=1):
+        yield item
+        elapsed = time.monotonic() - started
+        fraction = completed / total if total else 1.0
+        filled = round(width * fraction)
+        eta = elapsed * (total - completed) / completed
+        bar = "#" * filled + "-" * (width - filled)
+        print(
+            f"\r{label}: [{bar}] {completed}/{total} ({fraction:6.1%}) "
+            f"elapsed {elapsed:6.1f}s, ETA {eta:6.1f}s",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+    print(file=sys.stderr)
 
 
 @dataclass
@@ -33,7 +59,9 @@ class ScanRow:
 
 
 def parse_measurements(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, skipinitialspace=True)
+    # gico/fringe-style summaries are often named *.txt.  Their extension is
+    # irrelevant: detect either comma-separated or whitespace-separated text.
+    df = pd.read_csv(path, sep=None, engine="python", skipinitialspace=True, comment="#")
     required = {"Epoch", "Amp", "Phase", "SNR"}
     missing = required - set(df.columns)
     if missing:
@@ -42,6 +70,25 @@ def parse_measurements(path: Path) -> pd.DataFrame:
     for column in ("Amp", "Phase", "SNR"):
         df[column] = pd.to_numeric(df[column], errors="coerce")
     return df.dropna(subset=["time", "Amp", "Phase", "SNR"]).sort_values("time")
+
+
+def write_corrected_measurements(source: Path, destination: Path, lag_s: float) -> None:
+    """Copy a beam summary while shifting only its Epoch timestamps."""
+    epoch_pattern = re.compile(r"(?P<epoch>\d{4}/\d{3}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
+
+    def shift_epoch(match: re.Match[str]) -> str:
+        original = match.group("epoch")
+        fraction_digits = len(original.rsplit(".", 1)[1]) if "." in original else 0
+        timestamp = pd.to_datetime(original, format="%Y/%j %H:%M:%S.%f")
+        corrected = timestamp - pd.Timedelta(lag_s, unit="s")
+        base = corrected.strftime("%Y/%j %H:%M:%S")
+        if fraction_digits == 0:
+            return base
+        fraction = f"{corrected.microsecond:06d}"[:fraction_digits].ljust(fraction_digits, "0")
+        return f"{base}.{fraction}"
+
+    original_text = source.read_text(encoding="utf-8")
+    destination.write_text(epoch_pattern.sub(shift_epoch, original_text), encoding="utf-8")
 
 
 def parse_skd_time(token: str) -> pd.Timestamp:
@@ -87,6 +134,13 @@ def parse_skd(path: Path) -> pd.DataFrame:
 
 
 def join_by_time(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float) -> pd.DataFrame:
+    # Pandas 3 can preserve different datetime resolutions (for example us
+    # from the summary text and ns from a constructed SKD timestamp).  asof
+    # joins require exactly the same dtype on both sides.
+    meas = meas.copy()
+    skd = skd.copy()
+    meas["time"] = pd.to_datetime(meas["time"]).astype("datetime64[ns]")
+    skd["time"] = pd.to_datetime(skd["time"]).astype("datetime64[ns]")
     merged = pd.merge_asof(
         meas.sort_values("time"), skd.sort_values("time"), on="time",
         direction="nearest", tolerance=pd.Timedelta(tolerance_s, unit="s"),
@@ -174,7 +228,7 @@ def make_maps(df: pd.DataFrame, xcol: str, ycol: str, grid_x: np.ndarray, grid_y
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("measurements", type=Path, help="CSV: Epoch, Amp, Phase, SNR")
+    p.add_argument("measurements", type=Path, help="correlation summary text: Epoch, Amp, Phase, SNR")
     p.add_argument("schedule", type=Path, help="SKD schedule file")
     p.add_argument("--outdir", type=Path, default=Path("scanning_result"))
     p.add_argument("--match-tolerance", type=float, default=0.006, help="timestamp match tolerance [s]")
@@ -186,6 +240,7 @@ def main() -> int:
     args = p.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
+    print("[1/4] Reading and matching input data...", file=sys.stderr, flush=True)
     joined = join_by_time(parse_measurements(args.measurements), parse_skd(args.schedule), args.match_tolerance)
     joined, rows = make_rows(joined, args.row_gap)
     if not rows:
@@ -199,7 +254,11 @@ def main() -> int:
     qy = np.linspace(joined.el_arcmin.quantile(0.01), joined.el_arcmin.quantile(0.99), args.grid_size)
     grid_x, grid_y = np.meshgrid(qx, qy)
     lags = np.arange(-args.max_lag_ms, args.max_lag_ms + args.lag_step_ms, args.lag_step_ms) / 1000.0
-    scores = np.array([score_lag(joined, rows, lag, grid_x, grid_y, args.min_snr) for lag in lags])
+    print(f"[2/4] Searching {len(lags)} lag candidates...", file=sys.stderr, flush=True)
+    scores = np.array([
+        score_lag(joined, rows, lag, grid_x, grid_y, args.min_snr)
+        for lag in progress(lags, len(lags), label="Lag search")
+    ])
     if not np.isfinite(scores).any():
         raise ValueError("lag cannot be fitted: both +Az and -Az rows with enough SNR are required")
     best_lag = float(lags[np.nanargmin(scores)])
@@ -207,11 +266,15 @@ def main() -> int:
     joined["el_corrected_arcmin"] = joined.el_arcmin - joined.el_rate_arcmin_s * best_lag
     joined["az_shift_arcmin"] = joined.az_corrected_arcmin - joined.az_arcmin
     joined["el_shift_arcmin"] = joined.el_corrected_arcmin - joined.el_arcmin
+    print("[3/4] Writing result tables...", file=sys.stderr, flush=True)
+    corrected_beam_path = args.outdir / f"{args.measurements.stem}_hosei{args.measurements.suffix}"
+    write_corrected_measurements(args.measurements, corrected_beam_path, best_lag)
     joined.to_csv(args.outdir / "matched_and_corrected.csv", index=False)
     pd.DataFrame({"lag_ms": lags * 1000, "mismatch": scores}).to_csv(args.outdir / "lag_search.csv", index=False)
     pd.DataFrame([dict(row_id=r.row_id, n_samples=len(r.indices), az_rate_arcmin_s=r.az_rate,
                        el_rate_arcmin_s=r.el_rate, direction=r.direction) for r in rows]).to_csv(args.outdir / "scan_rows.csv", index=False)
 
+    print("[4/4] Creating diagnostic maps...", file=sys.stderr, flush=True)
     amp0, phase0 = make_maps(joined, "az_arcmin", "el_arcmin", grid_x, grid_y)
     amp1, phase1 = make_maps(joined, "az_corrected_arcmin", "el_corrected_arcmin", grid_x, grid_y)
     extent = [qx.min(), qx.max(), qy.min(), qy.max()]
@@ -238,6 +301,7 @@ def main() -> int:
     print(f"Matched samples: {len(joined)}")
     print(f"Best scan lag: {best_lag * 1000:.1f} ms")
     print(f"Typical Az correction: {abs(speed * best_lag):.5g} arcmin ({abs(speed * best_lag) * 60:.5g} arcsec)")
+    print(f"Corrected beam: {corrected_beam_path}")
     print(f"Outputs: {args.outdir}")
     return 0
 
