@@ -22,6 +22,7 @@ static std::string cor_for(const std::string& wd,const std::string& xml) {
 }
 int main(int argc,char**argv){
  try{
+  if(argc == 1){ help(); return 1; }
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
   std::string wd=arg(argc,argv,"--workdir","","."); int maxit=std::stoi(arg(argc,argv,"--max-iterations","", "20"));
   auto xs=files_matching(wd,"_fringe_search",".xml"); if(xs.empty())throw std::runtime_error("No fringe-search XML found.");
