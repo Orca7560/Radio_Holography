@@ -100,7 +100,11 @@ holo=(Holography --in "$beam" --out "$results_dir")
 [[ -n "$center_block_size" ]] && holo+=(--center-block-size "$center_block_size")
 
 run "${scan[@]}"
-# corr_fringe must consume best_lag_ms from this scanning-result directory.
+# Do not silently run an uncorrected second frinZ pass.
+if ! corr_fringe --help 2>&1 | grep -q -- '--scan-result'; then
+  echo "corr_fringe does not support --scan-result yet; refusing uncorrected reprocessing." >&2
+  exit 2
+fi
 run "${corr[@]}" --only-frinZ --scan-result "$scan_dir"
 run group_up_txt --in "$obs_dir/frinz_results" --prd "$prd" --out "$beam"
 run "${holo[@]}"
