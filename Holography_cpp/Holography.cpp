@@ -273,7 +273,8 @@ static std::vector<double> surface_error(const Grid& a, double block, double& rm
     std::array<std::array<double,4>,3> m{}; int count=0;
     for(int y=0;y<a.ny;++y) for(int x=0;x<a.nx;++x) {
         int k=y*a.nx+x; ph[k]=std::arg(a.at(y,x));
-        if(ph[k]>3*PI/4) ph[k]-=PI; if(ph[k]<-3*PI/4) ph[k]+=PI;
+        if (ph[k] > 3 * PI / 4) ph[k] -= PI;
+        if (ph[k] < -3 * PI / 4) ph[k] += PI;
         double X=a.x(x),Y=a.y(y),r=std::hypot(X,Y);
         if(r>=FIT_R_MIN_M && r<=FIT_R_MAX_M) {
             double v[3]={X,Y,1.0};
