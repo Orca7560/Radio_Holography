@@ -512,7 +512,10 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
 
 def main():
     parser = argparse.ArgumentParser(description="gico3とfringe/frinZの処理を実行するスクリプト。")
-    parser.add_argument("obs_code", help="観測コード (例: I25231Y)")
+    parser.add_argument(
+        "--workdir", default=".", metavar="DIR",
+        help="観測ディレクトリ。未指定時はカレントディレクトリ（既定値: .）。"
+    )
     
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--only-corr", action="store_true", help="gico3の処理のみ実行します。")
@@ -539,7 +542,7 @@ def main():
     )
     
     args = parser.parse_args()
-    obs_code = args.obs_code
+    obs_code = args.workdir
     try:
         lag_to_units(args.scan_lag_ms, args.scan_half)
     except ValueError as e:
