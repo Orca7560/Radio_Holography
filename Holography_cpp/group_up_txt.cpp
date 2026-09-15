@@ -1,0 +1,30 @@
+#include "common.hpp"
+#include <iostream>
+#include <map>
+using namespace holo;
+struct Prd { double t,az,el; };
+static void help(){std::cout<<"group_up_txt [--input DIR|--in DIR] [--output FILE|--out FILE] [--prd FILE] [--add-delay] [--maser]\n"
+"Input root defaults to . (reads fringe_results/); output defaults to beam.txt.\n";}
+static std::vector<Prd> read_prd(const fs::path&p){
+ std::ifstream f(p); if(!f)throw std::runtime_error("Cannot open PRD: "+p.string());std::vector<Prd>r;std::string l;
+ while(std::getline(f,l)){auto v=split(trim(l),' ');v.erase(std::remove(v.begin(),v.end(),""),v.end());if(v.size()<3)continue;try{r.push_back({std::stod(v[v.size()-3]),std::stod(v[v.size()-2]),std::stod(v[v.size()-1])});}catch(...){}}
+ return r;
+}
+int main(int argc,char**argv){
+ try{
+  if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
+  fs::path root=arg(argc,argv,"--input","--in",".");fs::path out=arg(argc,argv,"--output","--out","beam.txt");
+  fs::path indir=root/"fringe_results"; if(!fs::is_directory(indir)) indir=root;
+  std::string prdarg=arg(argc,argv,"--prd"); std::vector<Prd>prd;
+  if(!prdarg.empty())prd=read_prd(prdarg); else {auto c=files_matching(root,"32",".prd");if(c.size()==1)prd=read_prd(c[0]);}
+  auto files=files_matching(indir,"",".txt");if(files.empty())throw std::runtime_error("No .txt fringe results found.");
+  std::ofstream o(out); bool maser=has_flag(argc,argv,"--maser"), delay=has_flag(argc,argv,"--add-delay");
+  o<<"Epoch, Length, Amp, Phase, "<<(maser?"Frequency":"SNR");if(delay)o<<", Res-Delay";if(!prd.empty())o<<", Az_Offset, El_Offset";o<<"\n";
+  for(auto file:files){std::ifstream f(file);std::string l;while(std::getline(f,l)){if(l.empty()||l[0]=='#')continue;std::istringstream is(l);std::vector<std::string>v;std::string q;while(is>>q)v.push_back(q);if(v.size()<17)continue;try{
+   double amp=std::stod(v[5]), snr=std::stod(v[6]), ph=std::stod(v[7]), len=std::stod(v[4]);bool modern=v.size()>=20;if(!modern)amp/=100.0;
+   o<<v[0]<<" "<<v[1]<<", "<<len<<", "<<amp<<", "<<ph<<", "<<(maser?v[8]:std::to_string(snr));if(delay)o<<", "<<v[modern?8:9];
+   if(!prd.empty()){auto it=prd.front(); o<<", "<<it.az<<", "<<it.el;} o<<"\n";
+  }catch(...){}}}
+  std::cout<<"Output: "<<out<<"\n";return 0;
+ }catch(const std::exception&e){std::cerr<<"Error: "<<e.what()<<"\n";return 2;}
+}
