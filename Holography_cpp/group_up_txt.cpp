@@ -3,8 +3,24 @@
 #include <map>
 using namespace holo;
 struct Prd { double t,az,el; };
-static void help(){std::cout<<"group_up_txt [--input DIR|--in DIR] [--output FILE|--out FILE] [--prd FILE] [--add-delay] [--maser]\n"
-"Input root defaults to . (reads fringe_results/); output defaults to beam.txt.\n";}
+static void help(){
+ std::cout <<
+"Usage:\n"
+"  group_up_txt [--input DIR] [--output FILE] [OPTIONS]\n\n"
+"Merge fringe-result text files into a beam file. By default it reads\n"
+"./fringe_results/ and writes ./beam.txt.\n\n"
+"Input and output:\n"
+"  --input, --in DIR    Observation directory (default: current directory).\n"
+"  --output, --out FILE Output beam file (default: beam.txt).\n"
+"  --prd FILE           PRD file for Az/El coordinates. If omitted, a unique\n"
+"                       *32.prd in the input directory is used automatically.\n\n"
+"Processing options:\n"
+"  --add-delay          Add the Res-Delay column.\n"
+"  --maser              Store Frequency instead of SNR.\n"
+"  -h, --help           Show this help.\n\n"
+"Example:\n"
+"  group_up_txt --in I26184Y --out I26184Y/beam.txt --prd I26184Y/I26184Y32.prd\n";
+}
 static std::vector<Prd> read_prd(const std::string&p){
  std::ifstream f(p); if(!f)throw std::runtime_error("Cannot open PRD: "+p);std::vector<Prd>r;std::string l;
  while(std::getline(f,l)){auto v=split(trim(l),' ');v.erase(std::remove(v.begin(),v.end(),""),v.end());if(v.size()<3)continue;try{r.push_back({std::stod(v[v.size()-3]),std::stod(v[v.size()-2]),std::stod(v[v.size()-1])});}catch(...){}}
