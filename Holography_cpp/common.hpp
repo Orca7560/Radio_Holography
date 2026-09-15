@@ -21,7 +21,8 @@ inline std::string capture(const std::string& command) {
     const auto p = fs::temp_directory_path() / ("holo_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
     int rc = run(command + " > " + quote(p.string()) + " 2>&1");
     std::ifstream in(p); std::ostringstream out; out << in.rdbuf(); std::error_code ec; fs::remove(p, ec);
-    if (rc != 0) return ""; return out.str();
+    if (rc != 0) return "";
+    return out.str();
 }
 inline std::vector<std::string> split(const std::string& s, char sep=',') {
     std::vector<std::string> v; std::string x; bool q=false;
@@ -32,10 +33,12 @@ inline std::string trim(std::string s) {
     return a==std::string::npos ? "" : s.substr(a,b-a+1);
 }
 inline bool has_flag(int argc,char**argv,const std::string& key) {
-    for(int i=1;i<argc;++i) if(argv[i]==key) return true; return false;
+    for(int i=1;i<argc;++i) if(argv[i]==key) return true;
+    return false;
 }
 inline std::string arg(int argc,char**argv,const std::string& a,const std::string& b="",const std::string& def="") {
-    for(int i=1;i+1<argc;++i) if(argv[i]==a || (!b.empty()&&argv[i]==b)) return argv[i+1]; return def;
+    for(int i=1;i+1<argc;++i) if(argv[i]==a || (!b.empty()&&argv[i]==b)) return argv[i+1];
+    return def;
 }
 inline std::vector<fs::path> files_matching(const fs::path& dir,const std::string& contains,const std::string& ext) {
     std::vector<fs::path> r; if(!fs::is_directory(dir)) return r;
