@@ -121,48 +121,88 @@ parser = argparse.ArgumentParser(
     ),
     epilog=(
         "例:\n"
-        "  python Holography_v8.py I26184Y\n"
-        "  python Holography_v8.py I26184Y --polar\n\n"
-        "--polar を指定すると、通常出力に加えて output_limited_test/polar/ に\n"
-        "開口面の円形極座標図、角度×半径展開図、および再表示用NPZを保存します。\n"
-        "極座標表示は見やすさのための座標変換であり、鏡面RMSは元の直交格子で計算します。"
+        "  python Holography_v9.py --input I26184Y/beam.txt --output I26184Y/output\n"
+        "  python Holography_v9.py --in I26184Y/beam.txt --out I26184Y/output "
+        "--slice-beam --slice-aperture\n"
+        "  python Holography_v9.py --input beam.txt --output output --db-min -35 "
+        "--zoom-size 30 --center-block-size 2.9\n\n"
+        "--input と --output は必須です。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
 )
 parser.add_argument(
-    "obs_code", nargs="?", default=OBS_CODE, metavar="OBS_CODE",
-    help=f"観測コード（入力は OBS_CODE/beam_test.txt）。省略時: {OBS_CODE}",
+    "--input", "--in", dest="input_file", required=True, metavar="FILE",
+    help="入力する beam.txt（または beam_test.txt）のファイルパス。",
+)
+parser.add_argument(
+    "--output", "--out", dest="output_dir", required=True, metavar="DIR",
+    help="図・解析結果を保存する出力ディレクトリ。",
 )
 parser.add_argument(
     "--polar", action="store_true",
-    help="開口面の極座標表示を追加して polar/ 以下に保存する。",
+    help="開口面の極座標表示を追加して output/polar/ 以下に保存する。",
+)
+parser.add_argument(
+    "--slice-beam", action="store_true",
+    help="ビームパターンの Az スライスを出力する。",
+)
+parser.add_argument(
+    "--slice-aperture", "--slice-apperture", dest="slice_aperture",
+    action="store_true",
+    help="開口面位相のスライスを出力する。",
+)
+parser.add_argument(
+    "--db-min", type=float, default=DB_MIN, metavar="DB",
+    help=f"dB スケールの下限 [dB]（既定値: {DB_MIN:g}）。",
+)
+parser.add_argument(
+    "--zoom-size", type=float, default=ZOOM_SIZE_ARCMIN, metavar="ARCMIN",
+    help=f"ビームパターンのズーム幅 [arcmin]（既定値: {ZOOM_SIZE_ARCMIN:g}）。",
+)
+parser.add_argument(
+    "--center-block-size", type=float, default=CENTER_BLOCK_SIZE_M, metavar="M",
+    help=f"副鏡ブロッキングとして除外する中心正方形の一辺 [m]（既定値: {CENTER_BLOCK_SIZE_M:g}）。",
 )
 args = parser.parse_args()
-OBS_CODE = args.obs_code
+
+if args.db_min >= 0:
+    parser.error("--db-min は 0 未満にしてください。")
+if args.zoom_size <= 0:
+    parser.error("--zoom-size は正の値にしてください。")
+if args.center_block_size <= 0:
+    parser.error("--center-block-size は正の値にしてください。")
+
 GENERATE_POLAR_MAPS = args.polar
+GENERATE_SLICES = args.slice_beam
+GENERATE_APERTURE_SLICES = args.slice_aperture
+DB_MIN = args.db_min
+ZOOM_SIZE_ARCMIN = args.zoom_size
+CENTER_BLOCK_SIZE_M = args.center_block_size
 
 # =========================
 # ディレクトリ・基本設定
 # =========================
+BEAM_FILE = os.path.expanduser(args.input_file)
+OUT_DIR = os.path.expanduser(args.output_dir)
+BASE_DIR = os.path.dirname(os.path.abspath(BEAM_FILE))
 
-BASE_DIR = OBS_CODE
-BEAM_FILE = os.path.join(BASE_DIR, "beam_test.txt")
-
-OUT_DIR       = os.path.join(BASE_DIR, "output_limited_test")
-
-SLICE_DIR = os.path.join(BASE_DIR, "slice")
+SLICE_DIR = os.path.join(OUT_DIR, "slice")
 SLICE_AMP_DIR = os.path.join(SLICE_DIR, "Amp")
 SLICE_PH_DIR  = os.path.join(SLICE_DIR, "Phase")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 if GENERATE_SLICES:
     os.makedirs(SLICE_AMP_DIR, exist_ok=True)
-    os.makedirs(SLICE_PH_DIR,  exist_ok=True)
+    os.makedirs(SLICE_PH_DIR, exist_ok=True)
 
-print(f"OBS_CODE : {OBS_CODE}")
-print(f"Input    : {BASE_DIR}/")
+print(f"Input : {BEAM_FILE}")
+print(f"Output: {OUT_DIR}")
 if GENERATE_POLAR_MAPS:
     print("Polar display: enabled (--polar)")
+if GENERATE_SLICES:
+    print("Beam slices: enabled (--slice-beam)")
+if GENERATE_APERTURE_SLICES:
+    print("Aperture slices: enabled (--slice-aperture)")
 
 c = 3e8
 f = 8.448e9
