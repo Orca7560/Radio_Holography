@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <map>
