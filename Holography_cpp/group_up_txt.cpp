@@ -5,7 +5,7 @@ using namespace holo;
 struct Prd { double t,az,el; };
 static void help(){std::cout<<"group_up_txt [--input DIR|--in DIR] [--output FILE|--out FILE] [--prd FILE] [--add-delay] [--maser]\n"
 "Input root defaults to . (reads fringe_results/); output defaults to beam.txt.\n";}
-static std::vector<Prd> read_prd(const fs::path&p){
+static std::vector<Prd> read_prd(const std::string&p){
  std::ifstream f(p); if(!f)throw std::runtime_error("Cannot open PRD: "+p.string());std::vector<Prd>r;std::string l;
  while(std::getline(f,l)){auto v=split(trim(l),' ');v.erase(std::remove(v.begin(),v.end(),""),v.end());if(v.size()<3)continue;try{r.push_back({std::stod(v[v.size()-3]),std::stod(v[v.size()-2]),std::stod(v[v.size()-1])});}catch(...){}}
  return r;
@@ -13,8 +13,8 @@ static std::vector<Prd> read_prd(const fs::path&p){
 int main(int argc,char**argv){
  try{
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
-  fs::path root=arg(argc,argv,"--input","--in",".");fs::path out=arg(argc,argv,"--output","--out","beam.txt");
-  fs::path indir=root/"fringe_results"; if(!fs::is_directory(indir)) indir=root;
+  std::string root=arg(argc,argv,"--input","--in",".");std::string out=arg(argc,argv,"--output","--out","beam.txt");
+  std::string indir=join(root,"fringe_results"); if(!is_dir(indir)) indir=root;
   std::string prdarg=arg(argc,argv,"--prd"); std::vector<Prd>prd;
   if(!prdarg.empty())prd=read_prd(prdarg); else {auto c=files_matching(root,"32",".prd");if(c.size()==1)prd=read_prd(c[0]);}
   auto files=files_matching(indir,"",".txt");if(files.empty())throw std::runtime_error("No .txt fringe results found.");
