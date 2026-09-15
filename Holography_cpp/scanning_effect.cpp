@@ -21,7 +21,7 @@ static void help(){std::cout <<
 "  --max-lag-ms MS     Search range: -MS to +MS (default: 1000).\n"
 "  --lag-step-ms MS    Search interval (default: 5).\n"
 "  --min-snr N         Minimum SNR used for the fit (default: 3).\n"
-"  --row-gap S         Reserved row-separation setting (default: 2).\n"
+"  --row-gap S         Row-separation gap (default: 2).\n"
 "  -h, --help          Show this help.\n\n"
 "Example:\n"
 "  scanning_effect --in summary.txt --skd schedule.skd --out scan_result\n";}
