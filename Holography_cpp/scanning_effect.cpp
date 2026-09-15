@@ -27,6 +27,7 @@ static void help(){std::cout <<
 static double epoch(const std::string&s){int y,d,h,m;double z;if(std::sscanf(s.c_str(),"%d/%d %d:%d:%lf",&y,&d,&h,&m,&z)==5)return (((y*366.+d)*24+h)*60+m)*60+z;throw std::runtime_error("Bad Epoch: "+s);}
 int main(int argc,char**argv){
  try{
+  if(argc == 1){ help(); return 1; }
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
   std::string ip=arg(argc,argv,"--input","--in"), sp=arg(argc,argv,"--skd"); if(ip.empty()||sp.empty()){ help(); throw std::runtime_error("--input and --skd are required."); }
   std::string out=arg(argc,argv,"--output","--out","scanning_result");mkdir_p(out);
