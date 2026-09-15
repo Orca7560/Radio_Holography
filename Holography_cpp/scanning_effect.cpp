@@ -5,12 +5,30 @@
 #include <map>
 using namespace holo;
 struct S {double t,amp,phase,snr,az,el,vx=0,vy=0;int dir=0;};
-static void help(){std::cout<<"scanning_effect --input FILE --skd FILE [--output DIR] [--max-lag-ms MS] [--lag-step-ms MS] [--min-snr N] [--row-gap S]\n";}
+static void help(){std::cout <<
+"Usage:\n"
+"  scanning_effect --input FILE --skd FILE [OPTIONS]\n\n"
+"Estimate the scan lag that makes +Az and -Az beam maps agree, then write\n"
+"corrected coordinates and the lag-search result.\n\n"
+"Required:\n"
+"  --input, --in FILE  Correlation summary CSV (Epoch, Amp, Phase, SNR).\n"
+"  --skd FILE          SKD schedule containing the $SKED block.\n\n"
+"Output:\n"
+"  --output, --out DIR Output directory (default: scanning_result).\n"
+"                       Creates matched_and_corrected.csv and lag_search.csv.\n\n"
+"Lag search:\n"
+"  --max-lag-ms MS     Search range: -MS to +MS (default: 1000).\n"
+"  --lag-step-ms MS    Search interval (default: 5).\n"
+"  --min-snr N         Minimum SNR used for the fit (default: 3).\n"
+"  --row-gap S         Reserved row-separation setting (default: 2).\n"
+"  -h, --help          Show this help.\n\n"
+"Example:\n"
+"  scanning_effect --in summary.txt --skd schedule.skd --out scan_result\n";}
 static double epoch(const std::string&s){int y,d,h,m;double z;if(std::sscanf(s.c_str(),"%d/%d %d:%d:%lf",&y,&d,&h,&m,&z)==5)return (((y*366.+d)*24+h)*60+m)*60+z;throw std::runtime_error("Bad Epoch: "+s);}
 int main(int argc,char**argv){
  try{
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
-  std::string ip=arg(argc,argv,"--input","--in"), sp=arg(argc,argv,"--skd");if(ip.empty()||sp.empty())throw std::runtime_error("--input and --skd are required.");
+  std::string ip=arg(argc,argv,"--input","--in"), sp=arg(argc,argv,"--skd"); if(ip.empty()||sp.empty()){ help(); throw std::runtime_error("--input and --skd are required."); }
   std::string out=arg(argc,argv,"--output","--out","scanning_result");mkdir_p(out);
   double maxlag=std::stod(arg(argc,argv,"--max-lag-ms","", "1000")), step=std::stod(arg(argc,argv,"--lag-step-ms","", "5")), mins=std::stod(arg(argc,argv,"--min-snr","", "3"));
   std::ifstream f(ip);std::string l;if(!std::getline(f,l))throw std::runtime_error("empty input");auto hd=split(l);std::map<std::string,int>col;for(int i=0;i<(int)hd.size();++i)col[trim(hd[i])]=i;
