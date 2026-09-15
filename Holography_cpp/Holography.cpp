@@ -8,7 +8,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdlib>
-#include <filesystem>
+#include "common.hpp"
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,7 +19,6 @@
 #include <string>
 #include <vector>
 
-namespace fs = std::filesystem;
 using cd = std::complex<double>;
 constexpr double PI = 3.1415926535897932384626433832795;
 constexpr double ARC_MIN_TO_RAD = PI / 10800.0;
@@ -212,8 +211,8 @@ static Grid make_grid(std::vector<Sample> p) {
     g.e.assign(nx*ny, cd(0,0)); g.snr.assign(nx*ny, 0.0);
     std::vector<int> n(nx*ny, 0);
     for (const auto& q : p) {
-        int ix = std::clamp(static_cast<int>(std::llround((q.az-xmin)/sx)),0,nx-1);
-        int iy = std::clamp(static_cast<int>(std::llround((q.el-ymin)/sy)),0,ny-1);
+        int ix = holo::clampi(static_cast<int>(std::llround((q.az-xmin)/sx)),0,nx-1);
+        int iy = holo::clampi(static_cast<int>(std::llround((q.el-ymin)/sy)),0,ny-1);
         int k=iy*nx+ix; g.e[k]+=q.e; g.snr[k]+=q.snr; ++n[k];
     }
     std::vector<int> valid;
@@ -292,13 +291,13 @@ static std::vector<double> surface_error(const Grid& a, double block, double& rm
     return z;
 }
 
-static std::string gp_path(const fs::path& p) {
-    std::string s=fs::absolute(p).generic_string(), out;
+static std::string gp_path(const std::string& p) {
+    std::string s=p, out;
     for(char c:s) { if(c=='\'') out+="\\\\'"; else out+=c; }
     return out;
 }
 
-static void write_map(const fs::path& p, const Grid& g, const std::vector<double>& v, bool mask_circle=false) {
+static void write_map(const std::string& p, const Grid& g, const std::vector<double>& v, bool mask_circle=false) {
     std::ofstream o(p); o<<std::setprecision(12);
     for(int y=0;y<g.ny;++y) { for(int x=0;x<g.nx;++x) {
         double z=v[y*g.nx+x]; if(mask_circle && std::hypot(g.x(x),g.y(y))>DIAMETER_M/2) z=std::numeric_limits<double>::quiet_NaN();
@@ -308,8 +307,8 @@ static void write_map(const fs::path& p, const Grid& g, const std::vector<double
 static std::vector<double> amplitude(const Grid& g){std::vector<double> v(g.nx*g.ny);for(size_t i=0;i<v.size();++i)v[i]=std::abs(g.e[i]);return v;}
 static std::vector<double> phase_deg(const Grid& g){std::vector<double> v(g.nx*g.ny);for(size_t i=0;i<v.size();++i)v[i]=std::arg(g.e[i])*180/PI;return v;}
 
-static void write_gnuplot(const fs::path& out, const Options& o, double beam_peak, double ap_peak) {
-    std::ofstream g(out/"plot.gp");
+static void write_gnuplot(const std::string& out, const Options& o, double beam_peak, double ap_peak) {
+    std::ofstream g(holo::join(out,"plot.gp"));
     auto p=[&](const std::string& n){return gp_path(out/n);};
     g<<"set terminal pngcairo size 1200,900 enhanced font 'Arial,14'\nset view map\nset pm3d map\nset key off\n";
     auto map=[&](const std::string& data,const std::string& png,const std::string& title,const std::string& cb,double lo,double hi){
@@ -338,23 +337,23 @@ static void write_gnuplot(const fs::path& out, const Options& o, double beam_pea
     g<<"unset output\n";
 }
 
-static void write_slices(const fs::path& out, const Grid& b, const Grid& a, const Options& o) {
+static void write_slices(const std::string& out, const Grid& b, const Grid& a, const Options& o) {
     if(o.slice_beam) {
-        std::ofstream f(out/"beam_slice_el0.dat"); int y=std::clamp(static_cast<int>(std::llround(-b.ymin/b.dy)),0,b.ny-1);
+        std::ofstream f(holo::join(out,"beam_slice_el0.dat")); int y=holo::clampi(static_cast<int>(std::llround(-b.ymin/b.dy)),0,b.ny-1);
         for(int x=0;x<b.nx;++x) f<<b.x(x)<<" "<<std::abs(b.at(y,x))<<" "<<std::arg(b.at(y,x))*180/PI<<"\n";
     }
     if(o.slice_aperture) {
-        std::ofstream f(out/"aperture_slice_y0.dat"); int y=std::clamp(static_cast<int>(std::llround(-a.ymin/a.dy)),0,a.ny-1);
+        std::ofstream f(holo::join(out,"aperture_slice_y0.dat")); int y=holo::clampi(static_cast<int>(std::llround(-a.ymin/a.dy)),0,a.ny-1);
         for(int x=0;x<a.nx;++x) f<<a.x(x)<<" "<<std::arg(a.at(y,x))*180/PI<<"\n";
     }
 }
 
-static void write_polar(const fs::path& out, const Grid& a) {
-    std::ofstream f(out/"aperture_rtheta.dat"); const int nr=160, nt=360;
+static void write_polar(const std::string& out, const Grid& a) {
+    std::ofstream f(holo::join(out,"aperture_rtheta.dat")); const int nr=160, nt=360;
     for(int ir=0;ir<nr;++ir) { double r=(ir+.5)*DIAMETER_M/(2*nr);
         for(int it=0;it<nt;++it) { double th=(it+.5)*2*PI/nt, X=r*std::cos(th),Y=r*std::sin(th);
-            int ix=std::clamp(static_cast<int>(std::llround((X-a.xmin)/a.dx)),0,a.nx-1);
-            int iy=std::clamp(static_cast<int>(std::llround((Y-a.ymin)/a.dy)),0,a.ny-1);
+            int ix=holo::clampi(static_cast<int>(std::llround((X-a.xmin)/a.dx)),0,a.nx-1);
+            int iy=holo::clampi(static_cast<int>(std::llround((Y-a.ymin)/a.dy)),0,a.ny-1);
             f<<th*180/PI<<" "<<r<<" "<<std::abs(a.at(iy,ix))<<"\n";
         } f<<"\n";
     }
@@ -363,7 +362,7 @@ static void write_polar(const fs::path& out, const Grid& a) {
 int main(int argc, char** argv) {
     try {
         Options o=parse_args(argc,argv);
-        fs::create_directories(o.output);
+        holo::mkdir_p(o.output);
         std::cout<<"Input : "<<o.input<<"\nOutput: "<<o.output<<"\n";
         auto data=read_beam(o.input); correct_reference_phase(data);
         Grid beam=make_grid(data), ap=aperture_from_beam(beam);
@@ -371,13 +370,13 @@ int main(int argc, char** argv) {
         auto ba=amplitude(beam), bp=phase_deg(beam), aa=amplitude(ap), pp=phase_deg(ap);
         double bpeak=*std::max_element(ba.begin(),ba.end()), apeak=*std::max_element(aa.begin(),aa.end());
         std::vector<double> db(ba.size()); for(size_t i=0;i<db.size();++i) db[i]=std::max(o.db_min,20*std::log10(std::max(ba[i],1e-300)/bpeak));
-        fs::path out=o.output;
-        write_map(out/"beam_amp.dat",beam,ba); write_map(out/"beam_db.dat",beam,db); write_map(out/"beam_phase.dat",beam,bp);
-        write_map(out/"aperture_amp.dat",ap,aa,true); write_map(out/"aperture_phase.dat",ap,pp,true); write_map(out/"surface_error.dat",ap,surface,true);
+        std::string out=o.output;
+        write_map(holo::join(out,"beam_amp.dat"),beam,ba); write_map(holo::join(out,"beam_db.dat"),beam,db); write_map(holo::join(out,"beam_phase.dat"),beam,bp);
+        write_map(holo::join(out,"aperture_amp.dat"),ap,aa,true); write_map(holo::join(out,"aperture_phase.dat"),ap,pp,true); write_map(holo::join(out,"surface_error.dat"),ap,surface,true);
         write_slices(out,beam,ap,o); if(o.polar) write_polar(out,ap);
-        { std::ofstream r(out/"result.txt"); r<<std::setprecision(8)<<"Surface RMS [mm] = "<<rms<<"\n"; }
+        { std::ofstream r(holo::join(out,"result.txt")); r<<std::setprecision(8)<<"Surface RMS [mm] = "<<rms<<"\n"; }
         write_gnuplot(out,o,bpeak,apeak);
-        std::string cmd="gnuplot \""+fs::absolute(out/"plot.gp").string()+"\"";
+        std::string cmd="gnuplot \""+holo::join(out,"plot.gp")+"\"";
         int rc=std::system(cmd.c_str());
         if(rc!=0) std::cerr<<"[WARN] gnuplot failed. Data files and plot.gp were still written.\n";
         else std::cout<<"PNG files written by gnuplot.\n";
