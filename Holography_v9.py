@@ -138,7 +138,7 @@ parser.add_argument(
     help="ビームパターンの Az スライスを出力する。",
 )
 parser.add_argument(
-    "--slice-aperture", "--slice-apperture", dest="slice_aperture",
+    "--slice-aperture", "--slice-aperture",
     action="store_true",
     help="開口面位相のスライスを出力する。",
 )
