@@ -15,24 +15,24 @@ static double residual(const std::string& t) {
  if(std::regex_search(t,m,r)) return std::stod(m[1]); throw std::runtime_error("Res-Delay not found");
 }
 static std::string cor_for(const std::string& wd,const std::string& xml) {
- std::string stem=xml.stem().string(); auto p=files_matching(join(wd,"stepcor"),"",".cor");
- for(auto& x:p) if(filename(x).find(stem.substr(0,std::min<size_t>(stem.size(),12)))!=std::string::npos)return x.string();
- return p.empty()?"":p.front().string();
+ std::string stem=xml.stem(); auto p=files_matching(join(wd,"stepcor"),"",".cor");
+ for(auto& x:p) if(filename(x).find(stem.substr(0,std::min<size_t>(stem.size(),12)))!=std::string::npos)return x;
+ return p.empty()?"":p.front();
 }
 int main(int argc,char**argv){
  try{
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
   std::string wd=arg(argc,argv,"--workdir","","."); int maxit=std::stoi(arg(argc,argv,"--max-iterations","", "20"));
   auto xs=files_matching(wd,"_fringe_search",".xml"); if(xs.empty())throw std::runtime_error("No fringe-search XML found.");
-  std::ofstream log(wd/"fringe_search_result.log"); log<<"xml\titerations\tsign\tres_delay_sample\tdelay_s\n";
+  std::ofstream log(join(wd,"fringe_search_result.log")); log<<"xml\titerations\tsign\tres_delay_sample\tdelay_s\n";
   for(auto x:xs){
-   set_delay(x,0,'+'); auto measure=[&](){if(run("gico3 --schedule "+quote(x.string())+" --raw-file "+quote((wd/"raw").string())+" --cor-file "+quote((join(wd,"stepcor")).string()))!=0)throw std::runtime_error("gico3 failed"); auto c=cor_for(wd,x);if(c.empty())throw std::runtime_error("cor not found");return residual(capture("fringe --in "+quote(c)));};
+   set_delay(x,0,'+'); auto measure=[&](){if(run("gico3 --schedule "+quote(x)+" --raw-file "+quote((join(wd,"raw")))+" --cor-file "+quote((join(wd,"stepcor"))))!=0)throw std::runtime_error("gico3 failed"); auto c=cor_for(wd,x);if(c.empty())throw std::runtime_error("cor not found");return residual(capture("fringe --in "+quote(c)));};
    double r0=measure(), mag=std::abs(r0); char sign='+'; double rplus;
    set_delay(x,mag/1024000000.0,'+'); rplus=measure();
    double rnow=rplus; if(std::abs(rplus)>=mag){set_delay(x,0,'+');set_delay(x,mag/1024000000.0,'-');rnow=measure();sign='-';if(std::abs(rnow)>=mag){log<<filename(x)<<"\tFAILED\n";set_delay(x,0,'+');continue;}}
    double total=mag; int it=2; while(std::abs(rnow)>0&&it<maxit){total+=std::abs(rnow);set_delay(x,total/1024000000.0,sign);rnow=measure();++it;}
    if(std::abs(rnow)>0){log<<filename(x)<<"\tFAILED\n";set_delay(x,0,'+');continue;}
-   std::string target=x; std::string n=target.string(); n=std::regex_replace(n,std::regex("_fringe_search\\.xml$"),".xml"); set_delay(n,total/1024000000.0,sign);
+   std::string target=x; std::string n=target; n=std::regex_replace(n,std::regex("_fringe_search\\.xml$"),".xml"); set_delay(n,total/1024000000.0,sign);
    log<<filename(x)<<"\t"<<it<<"\t"<<sign<<"\t"<<rnow<<"\t"<<sign<<total/1024000000.0<<"\n";set_delay(x,0,'+');
   } return 0;
  }catch(const std::exception&e){std::cerr<<"Error: "<<e.what()<<"\n";return 2;}
