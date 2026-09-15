@@ -1,28 +1,19 @@
 """
-Holography_v8.py — 開口面ホログラフィ解析（通常表示／極座標表示）。
+Holography_v9.py — 開口面ホログラフィ解析（通常表示／極座標表示）。
 
-実行:
-  python Holography_v8.py OBS_CODE
-  python Holography_v8.py OBS_CODE --polar
+実行例:
+  python Holography_v9.py --input I26184Y/beam.txt --output I26184Y/output
+  python Holography_v9.py --in I26184Y/beam.txt --out I26184Y/output \
+      --slice-beam --slice-aperture
+  python Holography_v9.py --input beam.txt --output output --polar
 
-`--polar` を付けた場合だけ、通常の解析・図に加え、開口面を
-極座標（円形図・角度×半径展開図）に変換した図を出力する。
-入力: I26149Y/beam_test.txt（添付v8_polarと同じ列・単位）
-必要ライブラリ: numpy pandas matplotlib scipy
-`--polar` 時の追加出力: I26149Y/output_limited_test/polar/
-    aperture_polar_raw.png        円形極座標図（FFT直後）
-    aperture_rtheta_raw.png       角度×半径展開図（FFT直後）
-    aperture_polar_corrected.png  円形極座標図（v8位相補正後）
-    aperture_rtheta_corrected.png 角度×半径展開図（v8位相補正後）
-    aperture_polar_data.npz       複素電場と座標（配列順は半径, 角度）
+--input / --in と --output / --out は必須。
+入力は beam.txt（または beam_test.txt）のファイルパス、出力は保存先
+ディレクトリを指定する。詳細は python Holography_v9.py -h を参照。
 
-各図は線形振幅・dB振幅・位相の3パネル。
-+ x方向が0度、+ y方向が90度、反時計回り。天球上の位置角ではない。
-FFT・入力・既存の補正・鏡面RMS計算はv8のまま。
-位相表示は実部・虚部を補間後に±180度で算出する。
-補正後の振幅は、補正後の複素電場の補間結果であるため、補正前と
-わずかに異なる場合がある。遮蔽や照度の確認にはraw図を使用する。
-極座標表示のサンプリングを細かくしても観測分解能は上がらない。
+--polar を付けた場合は、通常の解析・図に加え、output/polar/ に
+開口面の円形極座標図、角度×半径展開図、再表示用NPZを保存する。
+極座標表示は見やすさのための座標変換であり、鏡面RMSは元の直交格子で計算する。
 """
 
 # --- 極座標表示の設定 ---
