@@ -1,4 +1,5 @@
 import sys
+import argparse
 import glob
 import subprocess
 import os
@@ -8,8 +9,6 @@ import re
 import numpy as np
 
 # 書き込むdelay値の符号を指定する変数 ('+' または '-')
-DELAY_SIGN = '+'
-
 # 収束処理の最大反復回数（無限ループ防止）
 MAX_ITERATIONS = 20
 
@@ -139,59 +138,78 @@ def find_cor_file(xml_file):
         return None
 
 
+def run_one_measurement(xml_file):
+    """gico3とfringeを1回実行し、(Res-Delay, Amp, SNR)を返す。"""
+    run_gico3(xml_file)
+    cor_file = find_cor_file(xml_file)
+    if cor_file is None:
+        print("  [ERROR] .corファイルが見つかりません。")
+        return None
+    result = parse_fringe_output(run_external_command(["fringe", "--in", cor_file], capture=True))
+    if result[0] is None:
+        print("  [WARN] fringeの結果からRes-Delayを抽出できませんでした。")
+        return None
+    print(f"  [INFO] Res-Delay: {result[0]} sample, Amp: {result[1]}, SNR: {result[2]}")
+    return result
+
+def set_delay_samples(xml_file, delay_samples, sign):
+    update_delay_in_xml(xml_file, abs(delay_samples) / 1024000000.0, sign)
+
 def converge_delay(xml_file):
-    """fringe_search用xmlに対してgico3->fringeを反復し、Res-Delayが0sample以下になるまでdelayを収束させる。
+    """+/- の試行結果から補正符号を自動決定してdelayを収束させる。"""
+    update_delay_in_xml(xml_file, 0.0, "+")
+    iterations = 1
+    print("  [INFO] --- 反復 1回目: delay=0 の基準測定 ---")
+    base = run_one_measurement(xml_file)
+    if base is None:
+        return None
+    res_delay, amp, snr = base
+    base_abs = abs(res_delay)
+    if base_abs <= 0:
+        return {"iterations": iterations, "res_delay": res_delay, "amp": amp,
+                "snr": snr, "cumulative_delay_sample": 0.0, "delay_sign": "+"}
 
-    継続/停止の判定、および累積は常にsample単位の生値で行い、
-    XMLファイルへ書き込むときにのみ1024000000で除算して秒に変換する。
-
-    戻り値: 収束成功時は dict(iterations, res_delay, amp, snr, cumulative_delay_sample)
-            失敗時は None
-    """
-    # 反復開始前にfringe_search用xmlのdelayを0に初期化する
-    update_delay_in_xml(xml_file, 0.0, DELAY_SIGN)
-    cumulative_delay_sample = 0.0
-
-    for iteration in range(1, MAX_ITERATIONS + 1):
-        print(f"  [INFO] --- 反復 {iteration}回目 ---")
-
-        run_gico3(xml_file)
-
-        cor_file = find_cor_file(xml_file)
-        if cor_file is None:
-            print("  [ERROR] .corファイルが見つからないため、この反復を中止します。")
+    trial_delay = base_abs
+    chosen_sign = None
+    chosen = None
+    for sign in ("+", "-"):
+        if iterations >= MAX_ITERATIONS:
+            break
+        iterations += 1
+        print(f"  [INFO] --- 反復 {iterations}回目: {sign}方向の試行 ---")
+        set_delay_samples(xml_file, trial_delay, sign)
+        trial = run_one_measurement(xml_file)
+        if trial is None:
             return None
+        if abs(trial[0]) < base_abs:
+            chosen_sign, chosen = sign, trial
+            break
+        update_delay_in_xml(xml_file, 0.0, "+")
 
-        fringe_command = ["fringe", "--in", cor_file]
-        fringe_output = run_external_command(fringe_command, capture=True)
+    if chosen_sign is None:
+        print("  [WARN] + / - のどちらもRes-Delayを小さくできませんでした。このstepをスキップします。")
+        update_delay_in_xml(xml_file, 0.0, "+")
+        return None
 
-        res_delay, amp, snr = parse_fringe_output(fringe_output)
-
-        if res_delay is None:
-            print("  [WARN] fringeの結果からRes-Delayを抽出できませんでした。")
+    cumulative_delay_sample = trial_delay
+    res_delay, amp, snr = chosen
+    while abs(res_delay) > 0 and iterations < MAX_ITERATIONS:
+        cumulative_delay_sample += abs(res_delay)
+        set_delay_samples(xml_file, cumulative_delay_sample, chosen_sign)
+        iterations += 1
+        print(f"  [INFO] --- 反復 {iterations}回目 ({chosen_sign}方向) ---")
+        measured = run_one_measurement(xml_file)
+        if measured is None:
             return None
+        res_delay, amp, snr = measured
 
-        print(f"  [INFO] Res-Delay: {res_delay} sample, Amp: {amp}, SNR: {snr}")
-
-        # 継続/停止の判定は読み取ったsample値そのままで行う
-        judge_delay = np.abs(res_delay)
-        if judge_delay <= 0:
-            print(f"  [SUCCESS] 収束しました（Res-Delay <= 0 sample）。累積delay: {cumulative_delay_sample} sample")
-            return {
-                "iterations": iteration,
-                "res_delay": res_delay,
-                "amp": amp,
-                "snr": snr,
-                "cumulative_delay_sample": cumulative_delay_sample,
-            }
-
-        # 収束していない場合、sample単位のまま累積する
-        cumulative_delay_sample += res_delay
-        # fringe_search用xmlに書き戻すときだけ1024000000で割って秒に変換する
-        update_delay_in_xml(xml_file, cumulative_delay_sample / 1024000000.0, DELAY_SIGN)
-
-    print(f"  [WARN] 最大反復回数({MAX_ITERATIONS}回)に達しましたが収束しませんでした。このstepをスキップします。")
-    return None
+    if abs(res_delay) > 0:
+        print(f"  [WARN] 最大反復回数({MAX_ITERATIONS}回)に達しましたが収束しませんでした。")
+        return None
+    print(f"  [SUCCESS] 収束しました。符号={chosen_sign}, 累積delay={cumulative_delay_sample} sample")
+    return {"iterations": iterations, "res_delay": res_delay, "amp": amp,
+            "snr": snr, "cumulative_delay_sample": cumulative_delay_sample,
+            "delay_sign": chosen_sign}
 
 
 def write_log(log_path, log_entries):
@@ -210,11 +228,11 @@ def write_log(log_path, log_entries):
     print(f"\n[INFO] ログファイルを出力しました: {log_path}")
 
 
-def main(obs_code):
+def main(workdir="."):
     """メインの処理を実行する関数"""
     try:
-        os.chdir(obs_code)
-        print(f"[INFO] '{obs_code}' ディレクトリに移動しました。\n")
+        os.chdir(workdir)
+        print(f"[INFO] '{os.path.abspath(workdir)}' を作業ディレクトリにします。\n")
     except FileNotFoundError:
         print(f"[ERROR] ディレクトリ '{obs_code}' が見つかりません。")
         sys.exit(1)
@@ -236,13 +254,13 @@ def main(obs_code):
             # 収束した最終delay（sample）を秒に変換してstep用xmlに反映（xml書き込み時のみ除算する）
             target_xml_file = xml_file.replace('_fringe_search.xml', '.xml')
             final_delay_sec = result["cumulative_delay_sample"] / 1024000000.0
-            update_delay_in_xml(target_xml_file, final_delay_sec, DELAY_SIGN)
+            update_delay_in_xml(target_xml_file, final_delay_sec, result["delay_sign"])
 
             log_entries.append({
                 "xml_file": xml_file,
                 "iterations": result["iterations"],
                 "res_delay": result["res_delay"],
-                "cumulative_delay_sec": f"{DELAY_SIGN}{abs(final_delay_sec):.5e}",
+                "cumulative_delay_sec": f"{result['delay_sign']}{abs(final_delay_sec):.5e}",
                 "amp": result["amp"],
                 "snr": result["snr"],
             })
@@ -257,7 +275,7 @@ def main(obs_code):
             })
 
         # fringe_search用xmlのdelayは常に0に戻しておく
-        update_delay_in_xml(xml_file, 0.0, DELAY_SIGN)
+        update_delay_in_xml(xml_file, 0.0, "+")
         print("")
 
     print("--- 全ての処理が完了しました ---")
@@ -266,10 +284,8 @@ def main(obs_code):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        script_name = os.path.basename(sys.argv[0])
-        print(f"使用法: python {script_name} <観測コード>")
-        sys.exit(1)
-
-    observation_code = sys.argv[1]
-    main(observation_code)
+    parser = argparse.ArgumentParser(description="fringeの残差delayを収束させます。")
+    parser.add_argument("--workdir", default=".", metavar="DIR",
+                        help="処理対象の観測ディレクトリ。未指定時はカレントディレクトリ。")
+    args = parser.parse_args()
+    main(args.workdir)
