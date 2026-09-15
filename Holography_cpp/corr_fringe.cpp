@@ -2,11 +2,30 @@
 #include <iostream>
 using namespace holo;
 static void help() {
- std::cout<<"corr_fringe --workdir DIR [--only-corr|--only-fringe|--only-frinz] [--cpu N] [--band-split N]\n"
-             "  workdir defaults to the current directory. gico3/fringe/frinZ must be in PATH.\n";
+ std::cout <<
+"Usage:\n"
+"  corr_fringe --workdir DIR [MODE] [OPTIONS]\n\n"
+"Run gico3 on step XML files, then run fringe or frinZ for the resulting .cor files.\n"
+"The external commands gico3, fringe and frinZ must be available in PATH.\n\n"
+"Working directory:\n"
+"  --workdir DIR       Observation directory (default: current directory).\n"
+"  --raw-dir DIR       Raw-data directory below workdir (default: raw).\n"
+"  --cor-dir DIR       Directory for .cor files below workdir (default: stepcor).\n\n"
+"Mode (default: run gico3 then fringe):\n"
+"  --only-corr         Run gico3 only.\n"
+"  --only-fringe       Run gico3 and fringe.\n"
+"  --only-frinz        Run gico3 and frinZ.  --only-frinZ is also accepted.\n\n"
+"Other options:\n"
+"  --cpu N             Number of CPU cores passed to gico3.\n"
+"  --band-split N      Reserved for band-split processing.\n"
+"  -h, --help          Show this help.\n\n"
+"Examples:\n"
+"  corr_fringe --workdir I26184Y --only-fringe --cpu 10\n"
+"  corr_fringe --workdir I26184Y --only-frinz\n";
 }
 int main(int argc,char**argv) {
  try {
+  if(argc == 1) { help(); return 1; }
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")) {help();return 0;}
   std::string wd=arg(argc,argv,"--workdir","", ".");
   if(!is_dir(wd)) throw std::runtime_error("workdir not found: "+wd);
