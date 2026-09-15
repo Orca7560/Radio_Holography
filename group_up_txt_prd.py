@@ -118,16 +118,17 @@ def prd_offset_at(prd_records, prd_times, epoch, integration_length_s, scan_lag_
     el = el0 + fraction * (el1 - el0)
     return az - az_rate * scan_lag_s, el - el_rate * scan_lag_s, az_rate, el_rate
 
-def merge_fringe_results(obs_code, add_delay=False, skd_filepath=None, prd_filepath=None,
+def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_filepath=None, prd_filepath=None,
                          scan_lag_ms=0.0, az_drive_speed=None, band=None, is_maser=False):
     """
     fringe_resultsのtxtファイルを統合し、オプションに応じて情報を追加する。
     is_maserがTrueの場合、SNRの代わりにFrequencyを取得する。
     """
     dir_name = f"fringe_results_{band}" if band else "fringe_results"
-    out_name = f"beam_{band}.txt" if band else "beam.txt"
-    input_directory = os.path.join(obs_code, dir_name)
-    output_file = os.path.join(obs_code, out_name)
+    input_directory = os.path.join(input_root, dir_name)
+    if output_file is None:
+        out_name = f"beam_{band}.txt" if band else "beam.txt"
+        output_file = os.path.join(input_root, out_name)
     
     if not os.path.isdir(input_directory):
         print(f"[ERROR] ディレクトリ '{input_directory}' が見つかりません。")
@@ -252,41 +253,52 @@ def merge_fringe_results(obs_code, add_delay=False, skd_filepath=None, prd_filep
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="fringe結果のテキストファイルを統合します。")
-    parser.add_argument("obs_code", help="観測コード (例: I25231Y)")
-    parser.add_argument("antenna", choices=("32", "34"),
-                        help="測定アンテナ径: 32 または 34")
+    parser.add_argument("--input", "--in", default=".", metavar="DIR",
+                        help="観測ディレクトリ（中の fringe_results/ を統合）。未指定時はカレントディレクトリ。")
+    parser.add_argument("--output", "--out", default="beam.txt", metavar="FILE",
+                        help="出力するbeamファイル。未指定時は beam.txt。")
+    parser.add_argument("--prd", metavar="FILE",
+                        help="使用するPRDファイル。未指定時は入力ディレクトリから32m用PRDを自動検出。")
+    parser.add_argument("--antenna", choices=("32", "34"), default="32",
+                        help="自動検出時に使うアンテナ径（既定値: 32）。")
     parser.add_argument("--add-delay", action="store_true", help="サマリーファイルにRes-Delayの列を追加します。")
     parser.add_argument("--scan-lag-ms", type=float, default=20.0, metavar="MS",
                         help="PRD座標へ適用する走査遅れ[ms]。既定値: 20。corr_fringe側で補正済みなら0を指定。")
     parser.add_argument("--az-drive-speed", type=float, default=3.0, metavar="ARCMIN_S",
-                        help="本走査中のAz駆動速度の絶対値[arcmin/s]。既定値: 3。位置はPRD区間始点からLengthの中点までの時間で算出し、向きはPRDから取る。折返し移動には適用しない。")
+                        help="本走査中のAz駆動速度の絶対値[arcmin/s]（既定値: 3）。")
     parser.add_argument("--band-split", type=int, metavar="DIVISIONS",
                         help="8192-8704MHzを指定した分割数で分割した結果を統合します。512の約数を指定してください。")
-    # --maser オプションを新規追加
     parser.add_argument("--maser", action="store_true", help="SNRの代わりにFrequencyを取得してファイルに書き込みます。")
-    
     args = parser.parse_args()
-    prd_filepath = os.path.join(args.obs_code, f"{args.obs_code}{args.antenna}.prd")
+
+    input_root = args.input
+    prd_filepath = args.prd
+    if prd_filepath is None:
+        base = os.path.basename(os.path.normpath(input_root))
+        expected = os.path.join(input_root, f"{base}{args.antenna}.prd")
+        candidates = [expected] if os.path.isfile(expected) else sorted(
+            glob.glob(os.path.join(input_root, f"*{args.antenna}.prd"))
+        )
+        if len(candidates) == 1:
+            prd_filepath = candidates[0]
+        else:
+            parser.error("PRDを自動検出できません。--prd FILE を指定してください。")
     print(f"[INFO] PRDファイル: {prd_filepath}")
-    
+
     if args.band_split is not None:
         divisions = args.band_split
         if divisions <= 0 or 512 % divisions != 0:
-            print(f"[ERROR] 全帯域幅 512MHz を {divisions} で割り切ることができません。")
-            print("ヒント: 512の約数（1, 2, 4, 8, 16, 32, 64, 128, 256, 512）を指定してください。")
-            sys.exit(1)
-
+            parser.error("全帯域幅 512MHz の約数を --band-split に指定してください。")
+        if args.output != "beam.txt":
+            parser.error("--band-split 使用時は --output を指定せず、帯域ごとの beam_*.txt を出力してください。")
         step = 512 // divisions
-        bands = [f"{8192 + i*step}_{8192 + (i+1)*step}" for i in range(divisions)]
-        
-        for band in bands:
+        for i in range(divisions):
+            band = f"{8192 + i*step}_{8192 + (i+1)*step}"
             print(f"\n===== バンド {band} の処理を開始します =====")
-            merge_fringe_results(args.obs_code, add_delay=args.add_delay,
-                                 prd_filepath=prd_filepath,
-                                 scan_lag_ms=args.scan_lag_ms, az_drive_speed=args.az_drive_speed,
-                                 band=band, is_maser=args.maser)
+            merge_fringe_results(input_root, prd_filepath=prd_filepath,
+                                 add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
+                                 az_drive_speed=args.az_drive_speed, band=band, is_maser=args.maser)
     else:
-        merge_fringe_results(args.obs_code, add_delay=args.add_delay, 
-                             prd_filepath=prd_filepath,
-                             scan_lag_ms=args.scan_lag_ms, az_drive_speed=args.az_drive_speed,
-                             is_maser=args.maser)
+        merge_fringe_results(input_root, output_file=args.output, prd_filepath=prd_filepath,
+                             add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
+                             az_drive_speed=args.az_drive_speed, is_maser=args.maser)
