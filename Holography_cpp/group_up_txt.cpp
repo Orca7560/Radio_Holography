@@ -28,6 +28,7 @@ static std::vector<Prd> read_prd(const std::string&p){
 }
 int main(int argc,char**argv){
  try{
+  if(argc == 1){ help(); return 1; }
   if(has_flag(argc,argv,"-h")||has_flag(argc,argv,"--help")){help();return 0;}
   std::string root=arg(argc,argv,"--input","--in",".");std::string out=arg(argc,argv,"--output","--out","beam.txt");
   std::string indir=join(root,"fringe_results"); if(!is_dir(indir)) indir=root;
