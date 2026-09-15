@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <sstream>
@@ -309,7 +310,7 @@ static std::vector<double> phase_deg(const Grid& g){std::vector<double> v(g.nx*g
 
 static void write_gnuplot(const std::string& out, const Options& o, double beam_peak, double ap_peak) {
     std::ofstream g(holo::join(out,"plot.gp"));
-    auto p=[&](const std::string& n){return gp_path(out/n);};
+    auto p=[&](const std::string& n){return gp_path(holo::join(out,n));};
     g<<"set terminal pngcairo size 1200,900 enhanced font 'Arial,14'\nset view map\nset pm3d map\nset key off\n";
     auto map=[&](const std::string& data,const std::string& png,const std::string& title,const std::string& cb,double lo,double hi){
       g<<"set output '"<<p(png)<<"'\nset title '"<<title<<"'\nset xlabel 'x [arcmin]'\nset ylabel 'y [arcmin]'\nset cblabel '"<<cb<<"'\nset cbrange ["<<lo<<":"<<hi<<"]\nsplot '"<<p(data)<<"' using 1:2:3 with pm3d\n";
