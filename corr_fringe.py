@@ -21,7 +21,7 @@ import math
 from astropy.time import Time
 import argparse
 
-output = 100  # xml ファイルの output 数
+output = 1000  # xml ファイルの output 数
 output_ON = 1 # ON の output 数
 corr_step = 0.5 # offset のスキャン時間 (s)
 on_length = 10 # on 点のスキャン時間 (s)

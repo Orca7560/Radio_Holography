@@ -312,7 +312,8 @@ if [[ "$AFTER_CORR" != "true" ]]; then
 
     # ── 2. corr_fringe_v6.py --only-corr : gico3実行 ──
     step 2/8 "corr_fringe.py --only-corr（gico3実行）"
-    run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-corr "${corr_fringe_corr_opts[@]}"
+    run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-corr \
+    "${corr_fringe_corr_opts[@]+"${corr_fringe_corr_opts[@]}"}"
 
     # ── 3. corr_fringe_v6.py --only-frinZ : frinZ実行（lag未補正） ──
     step 3/8 "corr_fringe.py --only-frinZ（lag未補正）"
