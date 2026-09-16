@@ -97,9 +97,9 @@ def parse_fringe_output(output):
                 amp = None
                 snr = None
                 try:
-                    res_delay = float(parts[9])
+                    res_delay = float(parts[8])
                 except ValueError:
-                    print(f"  [WARN] Res-Delayの値の変換に失敗しました: {parts[9]}")
+                    print(f"  [WARN] Res-Delayの値の変換に失敗しました: {parts[8]}")
                 try:
                     amp = float(parts[5])
                 except ValueError:
@@ -124,7 +124,7 @@ def update_delay_in_xml(filename, new_delay_value, sign):
             return
 
         # 小数点以下5桁の指数表現（＝整数部1桁＋小数部5桁で有効数字6桁）
-        formatted_delay = f"{sign}{abs(new_delay_value):.5e}"
+        formatted_delay = f"{sign}{abs(new_delay_value):.7e}"
         delay_element.text = formatted_delay
 
         if sys.version_info >= (3, 9):
@@ -210,7 +210,7 @@ def converge_delay(xml_file):
     trial_delay = base_abs
     chosen_sign = None
     chosen = None
-    for sign in ("+", "-"):
+    for sign in ("-", "+"):
         if iterations >= MAX_ITERATIONS:
             break
         iterations += 1
@@ -231,7 +231,7 @@ def converge_delay(xml_file):
 
     cumulative_delay_sample = trial_delay
     res_delay, amp, snr = chosen
-    while abs(res_delay) > 0 and iterations < MAX_ITERATIONS:
+    while abs(res_delay) > 1 and iterations < MAX_ITERATIONS:
         cumulative_delay_sample += abs(res_delay)
         set_delay_samples(xml_file, cumulative_delay_sample, chosen_sign)
         iterations += 1
@@ -241,7 +241,7 @@ def converge_delay(xml_file):
             return None
         res_delay, amp, snr = measured
 
-    if abs(res_delay) > 0:
+    if abs(res_delay) > 1:
         print(f"  [WARN] 最大反復回数({MAX_ITERATIONS}回)に達しましたが収束しませんでした。")
         return None
     print(f"  [SUCCESS] 収束しました。符号={chosen_sign}, 累積delay={cumulative_delay_sample} sample")

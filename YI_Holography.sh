@@ -4,11 +4,11 @@
 #
 # 通常モード（既定, 全8ステップ）:
 #   1. fringe_search.py                     delay収束
-#   2. corr_fringe_v6.py --only-corr        gico3実行
-#   3. corr_fringe_v6.py --only-frinZ       frinZ実行（lag未補正）
+#   2. corr_fringe.py --only-corr        gico3実行
+#   3. corr_fringe.py --only-frinZ       frinZ実行（lag未補正）
 #   4. group_up_txt_prd.py                  beam_search.txt を作成
 #   5. scanning_effect.py                   走査lagを推定
-#   6. corr_fringe_v6.py --only-frinZ       frinZ再実行（lag補正あり）
+#   6. corr_fringe.py --only-frinZ       frinZ再実行（lag補正あり）
 #   7. group_up_txt_prd.py                  beam.txt（最終）を作成
 #   8. Holography.py                        ホログラフィ解析
 #
@@ -37,7 +37,7 @@ set -euo pipefail
 # ── スクリプト自身の場所（同じディレクトリのpythonスクリプトを呼ぶ） ──
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_FRINGE_SEARCH="${SCRIPT_DIR}/fringe_search.py"
-PY_CORR_FRINGE="${SCRIPT_DIR}/corr_fringe_v6.py"
+PY_CORR_FRINGE="${SCRIPT_DIR}/corr_fringe.py"
 PY_GROUP_UP="${SCRIPT_DIR}/group_up_txt_prd.py"
 PY_SCANNING="${SCRIPT_DIR}/scanning_effect.py"
 PY_HOLOGRAPHY="${SCRIPT_DIR}/Holography.py"
@@ -311,11 +311,11 @@ if [[ "$AFTER_CORR" != "true" ]]; then
     run python3 "$PY_FRINGE_SEARCH" --workdir "$OBS_CODE"
 
     # ── 2. corr_fringe_v6.py --only-corr : gico3実行 ──
-    step 2/8 "corr_fringe_v6.py --only-corr（gico3実行）"
+    step 2/8 "corr_fringe.py --only-corr（gico3実行）"
     run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-corr "${corr_fringe_corr_opts[@]}"
 
     # ── 3. corr_fringe_v6.py --only-frinZ : frinZ実行（lag未補正） ──
-    step 3/8 "corr_fringe_v6.py --only-frinZ（lag未補正）"
+    step 3/8 "corr_fringe.py --only-frinZ（lag未補正）"
     run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-frinZ "${corr_fringe_common_opts[@]}"
 
     # ── 4. group_up_txt_prd.py : beam_search.txt 作成 ──
@@ -358,15 +358,15 @@ if [[ "$DRY_RUN" == "true" ]]; then
     BEST_LAG_MS="0"
 else
     # scanning_effect.pyの探索刻み(既定1ms)そのままの値を丸めずに使う。
-    # corr_fringe_v6.pyは10ms刻みしか受け付けないため、10の倍数でない値を
-    # 渡すとcorr_fringe_v6.py自身がエラーで停止する。
+    # corr_fringe.pyは10ms刻みしか受け付けないため、10の倍数でない値を
+    # 渡すとcorr_fringe.py自身がエラーで停止する。
     BEST_LAG_MS=$(estimate_lag_ms "$LAG_SEARCH_CSV")
 fi
 
 echo "[INFO] 推定lag（探索刻み ${LAG_STEP_MS} ms, 丸めなし, 符号反転=${INVERT_LAG_SIGN}）: ${BEST_LAG_MS} ms"
 
-# ── corr_fringe_v6.py --only-frinZ : frinZ再実行（lag補正あり） ──
-step "$STEP6_LABEL" "corr_fringe_v6.py --only-frinZ（lag補正 ${BEST_LAG_MS} ms）"
+# ── corr_fringe.py --only-frinZ : frinZ再実行（lag補正あり） ──
+step "$STEP6_LABEL" "corr_fringe.py --only-frinZ（lag補正 ${BEST_LAG_MS} ms）"
 run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-frinZ \
     --scan-lag-ms "$BEST_LAG_MS" "${corr_fringe_common_opts[@]}"
 
