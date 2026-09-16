@@ -20,8 +20,8 @@ fringe_search.py — fringe_search用XMLのdelayをRes-Delayが収束するま�
 
 前提条件:
   - gico3, fringe コマンドにPATHが通っていること。
-  - 実行ディレクトリ（またはworkdir配下）に `./raw`, `./stepcor` があり、
-    gico3が `./stepcor` 以下に `YAMAGU32_YAMAGU34_<timestamp>_*<label>.cor`
+  - 実行ディレクトリ（またはworkdir配下）に `./raw`, `./fringe_search` があり、
+    gico3が `./fringe_search` 以下に `YAMAGU32_YAMAGU34_<timestamp>_*<label>.cor`
     という命名の.corファイルを生成すること。
   - 各fringe_search用XMLに `process/epoch`, `process/skip`, `stream/label`,
     `clock[@key='K']/delay` のタグが存在すること。
@@ -141,7 +141,7 @@ def update_delay_in_xml(filename, new_delay_value, sign):
 
 def run_gico3(xml_file):
     """gico3を実行する"""
-    gico3_command = ["gico3", "--schedule", xml_file, "--raw-file", "./raw", "--cor-file", "./stepcor"]
+    gico3_command = ["gico3", "--schedule", xml_file, "--raw-file", "./raw", "--cor-file", "./fringe_search"]
     run_external_command(gico3_command)
 
 
@@ -159,7 +159,7 @@ def find_cor_file(xml_file):
         scan_start_datetime = base_datetime + timedelta(seconds=skip_sec)
         timestamp_for_file = scan_start_datetime.strftime('%Y%j%H%M%S')
 
-        file_pattern = f"./stepcor/YAMAGU32_YAMAGU34_{timestamp_for_file}_*{label}.cor"
+        file_pattern = f"./fringe_search/YAMAGU32_YAMAGU34_{timestamp_for_file}_*{label}.cor"
         cor_files = sorted(glob.glob(file_pattern))
 
         if not cor_files:
