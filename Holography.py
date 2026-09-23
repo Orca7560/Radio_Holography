@@ -488,8 +488,8 @@ if PLOT_BEAM_CUT:
             with np.errstate(divide="ignore"):
                 amp_cut_db = 20.0 * np.log10(amp_cut / peak_cut)
             fig, ax = plt.subplots(figsize=(8, 4.5))
-            ax.plot(az_cut, amp_cut_db, marker="o", markersize=3, linewidth=1.0)
-            ax.set_xlim(-20.0, 20.0)
+            ax.plot(az_cut, amp_cut_db, marker="-", markersize=3, linewidth=1.0)
+            ax.set_xlim(-60.0, 60.0)
             ax.set_ylim(DB_MIN, 0.0)
             ax.set_xlabel("Az offset [arcmin]")
             ax.set_ylabel("Normalized amplitude [dB]")
