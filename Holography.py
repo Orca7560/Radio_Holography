@@ -7,6 +7,7 @@ Holography.py — 開口面ホログラフィ解析（通常表示／極座標�
       --slice-beam --slice-aperture
   python Holography.py --input beam.txt --output output --polar
   python Holography.py --input beam.txt --output output --beam
+  python Holography.py --input beam.txt --output output --scan-width 57
 
 --input / --in と --output / --out は必須。
 入力は beam.txt（または beam_test.txt）のファイルパス、出力は保存先
@@ -117,7 +118,8 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --in I26184Y/beam.txt --out I26184Y/output "
         "--slice-beam --slice-aperture\n"
         "  python Holography.py --input beam.txt --output output --db-min -35 "
-        "--zoom-size 30 --center-block-size 2.9\n\n"
+        "--zoom-size 30 --center-block-size 2.9\n"
+        "  python Holography.py --input beam.txt --output output --scan-width 57\n\n"
         "--input と --output は必須です。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
@@ -159,6 +161,10 @@ parser.add_argument(
     "--center-block-size", type=float, default=CENTER_BLOCK_SIZE_M, metavar="M",
     help=f"副鏡ブロッキングとして除外する中心正方形の一辺 [m]（既定値: {CENTER_BLOCK_SIZE_M:g}）。",
 )
+parser.add_argument(
+    "--scan-width", type=float, default=None, metavar="ARCMIN",
+    help="ビーム作成に使うAz/Elオフセットの半幅 [arcmin]。例: 57 はAz・Elとも±57′だけを使用する。",
+)
 if len(sys.argv) == 1:
     parser.print_help()
     sys.exit(1)
@@ -171,6 +177,8 @@ if args.zoom_size <= 0:
     parser.error("--zoom-size は正の値にしてください。")
 if args.center_block_size <= 0:
     parser.error("--center-block-size は正の値にしてください。")
+if args.scan_width is not None and args.scan_width <= 0:
+    parser.error("--scan-width は正の値にしてください。")
 
 GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
@@ -179,6 +187,7 @@ PLOT_BEAM_CUT = args.beam
 DB_MIN = args.db_min
 ZOOM_SIZE_ARCMIN = args.zoom_size
 CENTER_BLOCK_SIZE_M = args.center_block_size
+OFFSET_LIMIT_ARCMIN = args.scan_width
 
 # =========================
 # ディレクトリ・基本設定
@@ -204,6 +213,8 @@ if GENERATE_SLICES:
     print("Beam slices: enabled (--slice-beam)")
 if GENERATE_APERTURE_SLICES:
     print("Aperture slices: enabled (--slice-aperture)")
+if OFFSET_LIMIT_ARCMIN is not None:
+    print(f"Scan width: Az/El ±{OFFSET_LIMIT_ARCMIN:g} arcmin (--scan-width)")
 
 c = 3e8
 f = 8.448e9
