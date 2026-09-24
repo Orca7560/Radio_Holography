@@ -159,12 +159,34 @@ def infer_scan_direction(scan_start, positions):
         if reverse_directions:
             directions.append(reverse_directions[0])
 
-    if not directions:
-        raise ValueError(
-            f"{scan_start}: SKDからAz走査方向を判定できません。"
-            "開始時刻付近に、同じElの連続した座標点が必要です。"
-        )
-    return directions[0]
+    if directions:
+        return directions[0]
+
+    # Some XML processes begin at an ON/reposition point rather than at an
+    # individual 0.5-s raster sample.  Select the closest valid *pair* in
+    # the surrounding schedule, never an entire 41-s window, so a later
+    # raster-row reversal cannot contaminate this decision.
+    candidates = []
+    for left, right in zip(positions, positions[1:]):
+        gap = (right[0] - left[0]).total_seconds()
+        if (gap <= 0.0 or gap > max_gap or
+                not math.isclose(left[2], right[2], abs_tol=1e-6)):
+            continue
+        delta_az = right[1] - left[1]
+        if abs(delta_az) <= 1e-6:
+            continue
+        midpoint = left[0] + (right[0] - left[0]) / 2
+        distance = abs((midpoint - scan_start).total_seconds())
+        candidates.append((distance, 1 if delta_az > 0 else -1))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+
+    raise ValueError(
+        f"{scan_start}: SKDからAz走査方向を判定できません。"
+        "連続する同一ElのAz座標がSKDに必要です。"
+    )
 
 
 def lag_to_units(lag_ms, scan_half):
