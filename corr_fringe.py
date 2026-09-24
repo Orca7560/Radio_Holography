@@ -104,26 +104,67 @@ def parse_skd_schedule(skd_filename, include_positions=False):
 
 
 def infer_scan_direction(scan_start, positions):
-    """Infer +Az/-Az from same-El SKD pairs inside one .cor scan.
+    """Infer the local +Az/-Az direction for one contiguous raster row.
 
-    Do not guess from odd/even XML process numbers: ON scans, missing files
-    and multiple XML files can all break that ordering.
+    A fixed 41-second window can include the next row of a raster scan.  That
+    row often runs in the opposite direction, so it must not be used for the
+    direction of the current .cor scan.
     """
-    scan_end = scan_start + timedelta(seconds=scan_time)
-    points = [p for p in positions if scan_start <= p[0] <= scan_end]
-    directions = set()
-    for left, right in zip(points, points[1:]):
-        if right[0] <= left[0] or not math.isclose(left[2], right[2], abs_tol=1e-6):
-            continue
+    if not positions:
+        raise ValueError(f"{scan_start}: SKD座標がありません。")
+
+    # XML epochs are whole seconds while SKD points may be spaced by 0.5 s.
+    # Start from the closest commanded point, then follow only adjacent points
+    # on the same elevation with the normal SKD sampling interval.
+    anchor = min(range(len(positions)),
+                 key=lambda i: abs((positions[i][0] - scan_start).total_seconds()))
+    max_gap = max(1.0, 2.1 * corr_step)
+    directions = []
+
+    def append_direction(left, right):
+        gap = (right[0] - left[0]).total_seconds()
+        if (gap <= 0.0 or gap > max_gap or
+                not math.isclose(left[2], right[2], abs_tol=1e-6)):
+            return False
         delta_az = right[1] - left[1]
-        if abs(delta_az) > 1e-6:
-            directions.add(1 if delta_az > 0 else -1)
-    if len(directions) != 1:
+        if abs(delta_az) <= 1e-6:
+            return True
+        direction = 1 if delta_az > 0 else -1
+        # Stop at a reversal even if two rows happen to share the same El.
+        if directions and direction != directions[0]:
+            return False
+        directions.append(direction)
+        return True
+
+    index = anchor
+    while index + 1 < len(positions) and append_direction(
+            positions[index], positions[index + 1]):
+        index += 1
+
+    # At the final point of a row there may be no usable right neighbour.
+    # In that case use the immediately preceding part of the same row.
+    if not directions:
+        index = anchor
+        reverse_directions = []
+        while index > 0:
+            left, right = positions[index - 1], positions[index]
+            gap = (right[0] - left[0]).total_seconds()
+            if (gap <= 0.0 or gap > max_gap or
+                    not math.isclose(left[2], right[2], abs_tol=1e-6)):
+                break
+            delta_az = right[1] - left[1]
+            if abs(delta_az) > 1e-6:
+                reverse_directions.append(1 if delta_az > 0 else -1)
+            index -= 1
+        if reverse_directions:
+            directions.append(reverse_directions[0])
+
+    if not directions:
         raise ValueError(
-            f"{scan_start}: SKDから単一のAz走査方向を判定できません。"
-            "同じElの座標点が複数必要です（折り返しを含む区間も補正できません）。"
+            f"{scan_start}: SKDからAz走査方向を判定できません。"
+            "開始時刻付近に、同じElの連続した座標点が必要です。"
         )
-    return directions.pop()
+    return directions[0]
 
 
 def lag_to_units(lag_ms, scan_half):
