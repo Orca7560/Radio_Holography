@@ -8,6 +8,7 @@ Holography.py — 開口面ホログラフィ解析（通常表示／極座標�
   python Holography.py --input beam.txt --output output --polar
   python Holography.py --input beam.txt --output output --beam
   python Holography.py --input beam.txt --output output --scan-width 57
+  python Holography.py --input beam.txt --output output --on-phase-linear-fit
 
 --input / --in と --output / --out は必須。
 入力は beam.txt（または beam_test.txt）のファイルパス、出力は保存先
@@ -119,7 +120,8 @@ parser = argparse.ArgumentParser(
         "--slice-beam --slice-aperture\n"
         "  python Holography.py --input beam.txt --output output --db-min -35 "
         "--zoom-size 30 --center-block-size 2.9\n"
-        "  python Holography.py --input beam.txt --output output --scan-width 57\n\n"
+        "  python Holography.py --input beam.txt --output output --scan-width 57\n"
+        "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n\n"
         "--input と --output は必須です。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
@@ -165,6 +167,11 @@ parser.add_argument(
     "--scan-width", type=float, default=None, metavar="ARCMIN",
     help="ビーム作成に使うAz/Elオフセットの半幅 [arcmin]。例: 57 はAz・Elとも±57′だけを使用する。",
 )
+parser.add_argument(
+    "--on-phase-linear-fit", action="store_true",
+    help="Amp > 1 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
+         "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
+)
 if len(sys.argv) == 1:
     parser.print_help()
     sys.exit(1)
@@ -184,6 +191,7 @@ GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
 GENERATE_APERTURE_SLICES = args.slice_aperture
 PLOT_BEAM_CUT = args.beam
+ON_PHASE_LINEAR_FIT = args.on_phase_linear_fit
 DB_MIN = args.db_min
 ZOOM_SIZE_ARCMIN = args.zoom_size
 CENTER_BLOCK_SIZE_M = args.center_block_size
@@ -455,12 +463,25 @@ on_mask = (Az == 0) & (El == 0)
 on_idx = np.flatnonzero(on_mask & (np.abs(E) > 1.0))
 E_corr = E.copy()
 
-phi_ref_interp = None
+phase_reference = None
+reference_label = "ON linear interpolation (correction)"
 if len(on_idx) >= 2:
     on_phases = np.unwrap(np.angle(E[on_idx]))
-    phi_ref_interp = np.interp(times_sec, times_sec[on_idx], on_phases)
-    E_corr *= np.exp(-1j * phi_ref_interp)
+    if ON_PHASE_LINEAR_FIT:
+        fit_time = times_sec[on_idx] - times_sec[on_idx[0]]
+        if np.unique(fit_time).size < 2:
+            raise ValueError("--on-phase-linear-fit には時刻の異なるON点が2点以上必要です。")
+        slope, intercept = np.polyfit(fit_time, on_phases, 1)
+        phase_reference = slope * (times_sec - times_sec[on_idx[0]]) + intercept
+        reference_label = "All ON points: linear fit (correction)"
+        print(f"[INFO] Amp > 1 のON点 {len(on_idx)} 点から位相を直線近似: "
+              f"{np.rad2deg(slope) * 3600:+.3f} deg/hour")
+    else:
+        phase_reference = np.interp(times_sec, times_sec[on_idx], on_phases)
+    E_corr *= np.exp(-1j * phase_reference)
 else:
+    if ON_PHASE_LINEAR_FIT:
+        raise ValueError("--on-phase-linear-fit には Amp > 1 のON点が2点以上必要です。")
     print(f"[WARN] 位相補正に使えるON点 (Amp > 1) が{len(on_idx)}点のため、補正しません。")
 
 # 補正に使う前の全測定点を表示。ONの不採用点も見えるようにする。
@@ -490,14 +511,14 @@ if np.any(on_excluded):
     ax_phase.scatter(time_axis[on_excluded], phase_values[on_excluded],
                      s=26, facecolors="none", edgecolors="red", linewidths=0.8,
                      zorder=3, label="ON excluded (Amp <= 1)")
-if phi_ref_interp is not None:
+if phase_reference is not None:
     # 全測定点と同じ[-180, 180]表示へ折り返す。±180度の境界では
     # 線を切り、図に存在しない斜めのジャンプを描かない。
-    reference_deg = np.rad2deg(np.angle(np.exp(1j * phi_ref_interp)))
+    reference_deg = np.rad2deg(np.angle(np.exp(1j * phase_reference)))
     reference_deg = reference_deg.copy()
     reference_deg[np.r_[False, np.abs(np.diff(reference_deg)) > 180]] = np.nan
     ax_phase.plot(time_axis, reference_deg, color="blue", linewidth=1.6,
-                  label="ON linear interpolation (correction)")
+                  label=reference_label)
 ax_phase.set_ylim(-180, 180)
 ax_phase.set_ylabel("Raw phase [deg]")
 ax_phase.set_xlabel("Time")
