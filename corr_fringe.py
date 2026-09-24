@@ -595,6 +595,10 @@ def main():
         "--forward-direction", choices=("increasing", "decreasing"), default="increasing",
         help="往路のAz方向。increasing=Az増加（既定）、decreasing=Az減少。SKD座標から判定します。"
     )
+    parser.add_argument(
+        "--skd", metavar="FILE",
+        help="使用するSKDファイル名。複数の .skd がある場合は指定してください。"
+    )
     
     if len(sys.argv) == 1:
         parser.print_help()
@@ -616,7 +620,12 @@ def main():
         sys.exit(1)
 
     # 1. SKDファイルの読み込みと判定
-    skd_files = glob.glob('*.skd')
+    if args.skd:
+        if not os.path.isfile(args.skd):
+            parser.error(f"--skd で指定したファイルが見つかりません: {args.skd}")
+        skd_files = [args.skd]
+    else:
+        skd_files = glob.glob('*.skd')
     on_points = []
     offset_scans = []
     scan_positions = []
