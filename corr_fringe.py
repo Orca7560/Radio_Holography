@@ -201,7 +201,7 @@ def lag_to_units(lag_ms, scan_half):
     return int(round(units))
 
 
-def apply_forward_lag(tasks, lag_ms, total_length):
+def apply_scan_lag(tasks, lag_ms, total_length):
     """Move boundaries, keep nominal timestamps and clip to available data.
 
     -100 ms at 100 samples/s:
@@ -346,7 +346,8 @@ def run_gico3_steps(step_xml_files, cpu=None):
 def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      add_quick_opt=False, bandscythe_only=False, scan_half=False,
                      scan_lag_ms=0.0, on_points=None, offset_scans=None, band=None,
-                     scan_positions=None, forward_direction="increasing"):
+                     scan_positions=None, forward_direction="increasing",
+                     scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
     processor_name = "fringe" if processor == "fringe" else "frinZ.py"
     band_label = f" [{band}]" if band else ""
@@ -359,6 +360,13 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
     offset_scans = offset_scans or []
     scan_positions = scan_positions or []
     forward_sign = 1 if forward_direction == "increasing" else -1
+    if scan_lag_increasing_ms is None and scan_lag_decreasing_ms is None:
+        # Legacy option: apply one lag to the selected forward direction.
+        direction_lags = {forward_sign: scan_lag_ms, -forward_sign: 0.0}
+    else:
+        direction_lags = {1: scan_lag_increasing_ms or 0.0,
+                          -1: scan_lag_decreasing_ms or 0.0}
+    apply_lags = any(lag != 0 for lag in direction_lags.values())
 
     def is_on_scan(start, label):
         if any(abs((start - t).total_seconds()) <= 1.0 for t in on_points):
@@ -369,10 +377,11 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
 
     # Validate every direction before overwriting any results or invoking frinZ.
     directions = {}
-    if scan_lag_ms != 0:
+    if apply_lags:
         if processor != "frinZ":
-            raise ValueError("--scan-lag-ms はfrinZ処理でのみ使用できます。")
-        lag_to_units(scan_lag_ms, scan_half)
+            raise ValueError("走査ラグ補正はfrinZ処理でのみ使用できます。")
+        for lag in direction_lags.values():
+            lag_to_units(lag, scan_half)
         if not scan_positions:
             raise ValueError("往復を判定するため、Az/El座標を含むSKDファイルが必要です。")
         for xml_file in step_xml_files:
@@ -383,8 +392,9 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                 start += timedelta(seconds=int(scan.find('skip').text))
                 if not is_on_scan(start, label):
                     directions[start] = infer_scan_direction(start, scan_positions)
-        if forward_sign not in directions.values():
-            raise ValueError("指定した往路方向のスキャンがありません。--forward-direction を確認してください。")
+        for direction, lag in direction_lags.items():
+            if lag != 0 and direction not in directions.values():
+                raise ValueError(f"Az方向 {direction:+d} のスキャンがありません。SKDを確認してください。")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -507,18 +517,20 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                                 tasks.append({'length': length_val, 'skip': skip_val})
                                 skip_val += skip_step
 
-                    if is_offset and scan_lag_ms != 0:
-                        if directions[scan_start_datetime] == forward_sign:
+                    if is_offset and apply_lags:
+                        direction = directions[scan_start_datetime]
+                        lag_ms = direction_lags[direction]
+                        if lag_ms != 0:
                             original_task_count = len(tasks)
-                            tasks = apply_forward_lag(tasks, scan_lag_ms, float(scan_time * output))
+                            tasks = apply_scan_lag(tasks, lag_ms, float(scan_time * output))
                             skipped_count = original_task_count - len(tasks)
                             first = tasks[0]
-                            print(f"  [INFO] 往路のみ {scan_lag_ms:+g} ms補正: "
+                            print(f"  [INFO] Az方向 {direction:+d} を {lag_ms:+g} ms補正: "
                                   f"先頭 --length {first['length']:g} --skip {first['skip']:g} "
                                   f"({first['length'] / output * 1000:g} ms積分)、"
                                   f"範囲外 {skipped_count} 区間をスキップ。Epochは補正前の時刻を保持。")
                         else:
-                            print("  [INFO] 復路のためラグを適用しません。")
+                            print(f"  [INFO] Az方向 {direction:+d} のラグは0 msです。")
 
                     for task in tasks:
                         float_length = float(task['length'])
@@ -581,13 +593,13 @@ def main():
             "  python corr_fringe_v6.py I25231Y --only-corr\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe\n"
             "  python corr_fringe_v6.py I25231Y --only-frinZ-freq --scan-half\n"
-            "  python corr_fringe_v6.py I25231Y --only-frinZ-freq --scan-half "
-            "--scan-lag-ms -100\n"
+            "  python corr_fringe.py I25231Y --only-frinZ-freq --scan-half "
+            "--scan-lag-increasing-ms -100 --scan-lag-decreasing-ms 80\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe-freq --band-split 8\n\n"
             "obs_code ディレクトリに移動して処理します。--only-* を何も指定しない"
             "場合はgico3処理とfringe処理の両方を実行します。\n"
-            "--scan-lag-ms は --only-frinZ / --only-frinZ-freq 使用時のみ有効で、"
-            "往路スキャンの積分境界だけを10ms刻みでずらします（Epochは不変）。\n"
+            "方向別ラグは --only-frinZ / --only-frinZ-freq 使用時のみ有効です。"
+            "Az増加・減少それぞれの積分境界を1 ms刻みでずらします（Epochは不変）。\n"
             "gico3, fringe, frinZ の各コマンドにPATHが通っている必要があります。"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -611,7 +623,15 @@ def main():
     )
     parser.add_argument(
         "--scan-lag-ms", type=float, default=0.0, metavar="MS",
-        help="往路だけfrinZの積分境界をMS msずらします。負=前、正=後。length/skipを変更し、Epochは保持（例: -100）。10 ms刻み。"
+        help="従来方式: --forward-direction で選んだ方向だけ積分境界をずらす [ms]。方向別オプションと併用不可。"
+    )
+    parser.add_argument(
+        "--scan-lag-increasing-ms", type=float, default=None, metavar="MS",
+        help="Az増加方向のfrinZ積分境界をMS msずらす。負=前、正=後。未指定は0 ms。1 ms刻み。"
+    )
+    parser.add_argument(
+        "--scan-lag-decreasing-ms", type=float, default=None, metavar="MS",
+        help="Az減少方向のfrinZ積分境界をMS msずらす。負=前、正=後。未指定は0 ms。1 ms刻み。"
     )
     parser.add_argument(
         "--forward-direction", choices=("increasing", "decreasing"), default="increasing",
@@ -627,12 +647,23 @@ def main():
         sys.exit(1)
     args = parser.parse_args()
     obs_code = args.obs_code
+    if args.scan_lag_ms != 0 and (
+        args.scan_lag_increasing_ms is not None or
+        args.scan_lag_decreasing_ms is not None
+    ):
+        parser.error("--scan-lag-ms と方向別のラグオプションは併用できません。")
     try:
-        lag_to_units(args.scan_lag_ms, args.scan_half)
+        for lag in (args.scan_lag_ms, args.scan_lag_increasing_ms,
+                    args.scan_lag_decreasing_ms):
+            if lag is not None:
+                lag_to_units(lag, args.scan_half)
     except ValueError as e:
         parser.error(str(e))
-    if args.scan_lag_ms != 0 and not (args.only_frinZ or args.only_frinZ_freq):
-        parser.error("--scan-lag-ms は --only-frinZ または --only-frinZ-freq と併用してください。")
+    has_lag = any(lag not in (None, 0) for lag in (
+        args.scan_lag_ms, args.scan_lag_increasing_ms,
+        args.scan_lag_decreasing_ms))
+    if has_lag and not (args.only_frinZ or args.only_frinZ_freq):
+        parser.error("走査ラグ補正は --only-frinZ または --only-frinZ-freq と併用してください。")
 
     try:
         os.chdir(obs_code)
@@ -663,8 +694,8 @@ def main():
     else:
         print("[WARN] .skdファイルが見つかりません。XMLラベル名による判定で処理を進めます。\n")
 
-    if args.scan_lag_ms != 0 and not scan_positions:
-        parser.error("往路判定用のSKD座標がありません。ラグを適用できません。")
+    if has_lag and not scan_positions:
+        parser.error("走査方向判定用のSKD座標がありません。ラグを適用できません。")
 
     # 2. XMLファイルの取得
     all_step_files = glob.glob('*_KL_X_step*.xml')
@@ -711,6 +742,8 @@ def main():
                     bandscythe_only=bandscythe_only_flag,
                     scan_half=args.scan_half,
                     scan_lag_ms=args.scan_lag_ms,
+                    scan_lag_increasing_ms=args.scan_lag_increasing_ms,
+                    scan_lag_decreasing_ms=args.scan_lag_decreasing_ms,
                     on_points=on_points, 
                     offset_scans=offset_scans, 
                     band=band,
@@ -726,6 +759,8 @@ def main():
                 bandscythe_only=bandscythe_only_flag,
                 scan_half=args.scan_half,
                 scan_lag_ms=args.scan_lag_ms,
+                scan_lag_increasing_ms=args.scan_lag_increasing_ms,
+                scan_lag_decreasing_ms=args.scan_lag_decreasing_ms,
                 on_points=on_points, 
                 offset_scans=offset_scans,
                 scan_positions=scan_positions,
