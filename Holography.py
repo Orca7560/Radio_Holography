@@ -8,6 +8,7 @@ Holography.py — 開口面ホログラフィ解析（通常表示／極座標�
   python Holography.py --input beam.txt --output output --polar
   python Holography.py --input beam.txt --output output --beam
   python Holography.py --input beam.txt --output output --scan-width 57
+  python Holography.py --input beam.txt --output output --phase-fit-high-amp
 
 --input / --in と --output / --out は必須。
 入力は beam.txt（または beam_test.txt）のファイルパス、出力は保存先
@@ -119,7 +120,8 @@ parser = argparse.ArgumentParser(
         "--slice-beam --slice-aperture\n"
         "  python Holography.py --input beam.txt --output output --db-min -35 "
         "--zoom-size 30 --center-block-size 2.9\n"
-        "  python Holography.py --input beam.txt --output output --scan-width 57\n\n"
+        "  python Holography.py --input beam.txt --output output --scan-width 57\n"
+        "  python Holography.py --input beam.txt --output output --phase-fit-high-amp\n\n"
         "--input と --output は必須です。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
@@ -165,6 +167,11 @@ parser.add_argument(
     "--scan-width", type=float, default=None, metavar="ARCMIN",
     help="ビーム作成に使うAz/Elオフセットの半幅 [arcmin]。例: 57 はAz・Elとも±57′だけを使用する。",
 )
+parser.add_argument(
+    "--phase-fit-high-amp", action="store_true",
+    help="ON点に限らず Amp > 1 の全測定点の位相を時間に対し直線近似し、全点から差し引く。\n"
+         "未指定時は従来の ON点（Amp > 1）間の位相線形補間。",
+)
 if len(sys.argv) == 1:
     parser.print_help()
     sys.exit(1)
@@ -184,6 +191,7 @@ GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
 GENERATE_APERTURE_SLICES = args.slice_aperture
 PLOT_BEAM_CUT = args.beam
+PHASE_FIT_HIGH_AMP = args.phase_fit_high_amp
 DB_MIN = args.db_min
 ZOOM_SIZE_ARCMIN = args.zoom_size
 CENTER_BLOCK_SIZE_M = args.center_block_size
@@ -450,13 +458,31 @@ is_even_scan = (el_inverse % 2 == 1)
 if EVEN_SCAN_AZ_OFFSET_ARCMIN != 0.0:
     Az_shifted[is_even_scan] += EVEN_SCAN_AZ_OFFSET_ARCMIN
 
-on_idx = np.where((Az == 0) & (El == 0) & (np.abs(E) > 1.0))[0]
 E_corr = E.copy()
 
-if len(on_idx) >= 2:
-    on_phases = np.unwrap(np.angle(E[on_idx]))
-    phi_ref_interp = np.interp(times_sec, times_sec[on_idx], on_phases)
-    E_corr = E_corr * np.exp(-1j * phi_ref_interp)
+if PHASE_FIT_HIGH_AMP:
+    # Peak-region measurements provide the phase reference even when they
+    # are not at an ON coordinate. Fit a single phase drift line in time.
+    reference = (np.abs(E) > 1.0) & np.isfinite(E.real) & np.isfinite(E.imag)
+    reference_idx = np.flatnonzero(reference)
+    if len(reference_idx) < 2 or len(np.unique(times_sec[reference_idx])) < 2:
+        raise ValueError(
+            "--phase-fit-high-amp には、Amp > 1 で時刻の異なる測定点が2点以上必要です。"
+        )
+    ref_time = times_sec[reference_idx]
+    origin_time = ref_time[0]
+    ref_phase = np.unwrap(np.angle(E[reference_idx]))
+    slope, intercept = np.polyfit(ref_time - origin_time, ref_phase, 1)
+    phase_reference = slope * (times_sec - origin_time) + intercept
+    E_corr *= np.exp(-1j * phase_reference)
+    print(f"[INFO] 位相補正: Amp > 1 の全測定点 {len(reference_idx)} 個を時間で直線近似 "
+          f"({np.rad2deg(slope) * 3600:+.3f} deg/hour)")
+else:
+    on_idx = np.where((Az == 0) & (El == 0) & (np.abs(E) > 1.0))[0]
+    if len(on_idx) >= 2:
+        on_phases = np.unwrap(np.angle(E[on_idx]))
+        phi_ref_interp = np.interp(times_sec, times_sec[on_idx], on_phases)
+        E_corr *= np.exp(-1j * phi_ref_interp)
 
 if OFFSET_LIMIT_ARCMIN is not None:
     limit_mask = (np.abs(Az_shifted) <= OFFSET_LIMIT_ARCMIN) & (np.abs(El_shifted) <= OFFSET_LIMIT_ARCMIN)
