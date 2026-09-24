@@ -6,8 +6,11 @@ time lag tau changes each sample coordinate as
 
     theta_corrected = theta_commanded - velocity * tau.
 
-tau is selected by making the amplitude maps from the two opposite azimuth
-scan directions agree as closely as possible.
+Independent lags are fitted for increasing and decreasing Az rows. First
+compare the opposite-direction amplitude maps; among nearly equally matching
+pairs, choose the map closest to an origin-centred Airy (Bessel) main beam.
+The Airy comparison anchors the common map translation, rather than forcing
+real asymmetries to vanish.
 
 Usage:
   python scanning_effect.py beam.txt schedule.skd
@@ -26,13 +29,14 @@ Inputs:
                 --prd based pointing already in beam.txt, if any).
 
 Outputs (written under --outdir, default "scanning_result/"):
-  <measurements stem>_hosei<suffix>  Copy of the input with only the Epoch
-                                      timestamps shifted by the fitted lag.
+  <measurements stem>_hosei<suffix>  Copy with each scanning direction's
+                                       Epoch shifted by its selected lag.
   matched_and_corrected.csv          Row-classified, lag-corrected samples.
-  lag_search.csv                     Mismatch score for every trial lag.
+  lag_search.csv                     Two-dimensional lag candidates and scores.
+  best_lags.csv                      Selected increasing/decreasing lag pair.
   scan_rows.csv                      One row per detected scan leg
                                       (direction, az/el rate, sample count).
-  scanning_diagnostics.png           Lag-fit curve plus amplitude/phase maps
+  scanning_diagnostics.png           Lag-pair score map plus amplitude/phase maps
                                       before and after correction.
 """
 
@@ -50,6 +54,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.interpolate import griddata
+from scipy.special import j1
 
 
 T = TypeVar("T")
@@ -98,15 +103,19 @@ def parse_measurements(path: Path) -> pd.DataFrame:
     return df.dropna(subset=["time", "Amp", "Phase", "SNR"]).sort_values("time")
 
 
-def write_corrected_measurements(source: Path, destination: Path, lag_s: float) -> None:
-    """Copy a beam summary while shifting only its Epoch timestamps."""
+def write_corrected_measurements(
+    source: Path, destination: Path, lag_by_epoch: dict[str, float]
+) -> None:
+    """Shift scanning epochs by direction; keep ON and unmatched epochs intact."""
     epoch_pattern = re.compile(r"(?P<epoch>\d{4}/\d{3}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 
     def shift_epoch(match: re.Match[str]) -> str:
         original = match.group("epoch")
+        if original not in lag_by_epoch:
+            return original
         fraction_digits = len(original.rsplit(".", 1)[1]) if "." in original else 0
         timestamp = pd.to_datetime(original, format="%Y/%j %H:%M:%S.%f")
-        corrected = timestamp - pd.Timedelta(lag_s, unit="s")
+        corrected = timestamp - pd.Timedelta(lag_by_epoch[original], unit="s")
         base = corrected.strftime("%Y/%j %H:%M:%S")
         if fraction_digits == 0:
             return base
@@ -220,28 +229,128 @@ def map_on_grid(df: pd.DataFrame, xcol: str, ycol: str, value: np.ndarray, grid_
     return griddata(points[valid], value[valid], (grid_x, grid_y), method="linear")
 
 
-def score_lag(df: pd.DataFrame, rows: list[ScanRow], lag_s: float, grid_x: np.ndarray, grid_y: np.ndarray, min_snr: float) -> float:
-    work = df.copy()
-    rate = {r.row_id: (r.az_rate, r.el_rate, r.direction) for r in rows}
-    work["vx"] = work.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[0])
-    work["vy"] = work.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[1])
-    work["direction"] = work.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[2])
-    work = work[(work.direction != 0) & (work.SNR >= min_snr)].copy()
-    work["x_corr"] = work.az_arcmin - work.vx * lag_s
-    work["y_corr"] = work.el_arcmin - work.vy * lag_s
-    plus, minus = work[work.direction > 0], work[work.direction < 0]
-    if len(plus) < 3 or len(minus) < 3:
-        return np.nan
-    a = map_on_grid(plus, "x_corr", "y_corr", plus.Amp.to_numpy(), grid_x, grid_y)
-    b = map_on_grid(minus, "x_corr", "y_corr", minus.Amp.to_numpy(), grid_x, grid_y)
+def pair_metrics(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
+    """Mismatch of two direction maps, normalized on their common support."""
     valid = np.isfinite(a) & np.isfinite(b)
     if valid.sum() < 20:
-        return np.nan
+        return np.nan, 0
     a, b = a[valid], b[valid]
-    a, b = a / np.nanmax(a), b / np.nanmax(b)
-    # Put emphasis on the main beam and useful sidelobes, not the noise floor.
+    amax, bmax = np.max(a), np.max(b)
+    if amax <= 0 or bmax <= 0:
+        return np.nan, 0
+    a, b = a / amax, b / bmax
     useful = (a + b) * 0.5 > 0.05
-    return float(np.mean((a[useful] - b[useful]) ** 2)) if useful.sum() >= 10 else np.nan
+    if useful.sum() < 10:
+        return np.nan, 0
+    return float(np.mean((a[useful] - b[useful]) ** 2)), int(useful.sum())
+
+
+def airy_main_beam_score(
+    a: np.ndarray, b: np.ndarray, models: list[np.ndarray],
+    central_mask: np.ndarray,
+) -> float:
+    """Compare the combined field amplitude with an origin-centred Airy beam.
+
+    The model is used only to choose among maps already matching between
+    directions; its centre is fixed so it can resolve the common translation.
+    """
+    valid = central_mask & np.isfinite(a) & np.isfinite(b)
+    if valid.sum() < 10:
+        return np.inf
+    av, bv = a[valid], b[valid]
+    amax, bmax = np.max(av), np.max(bv)
+    if amax <= 0 or bmax <= 0:
+        return np.inf
+    observed = 0.5 * (av / amax + bv / bmax)
+    return min(float(np.mean((observed - model[valid]) ** 2)) for model in models)
+
+
+def search_direction_lags(
+    df: pd.DataFrame, grid_x: np.ndarray, grid_y: np.ndarray,
+    max_lag_ms: float, step_ms: float, min_snr: float,
+    model_el_deg: float, airy_radius_arcmin: float,
+) -> tuple[float, float, pd.DataFrame]:
+    """Coarse two-dimensional search followed by fine local refinement."""
+    plus = df[(df.direction > 0) & (df.SNR >= min_snr)].copy()
+    minus = df[(df.direction < 0) & (df.SNR >= min_snr)].copy()
+    if len(plus) < 3 or len(minus) < 3:
+        raise ValueError("both +Az and -Az rows with enough SNR are required")
+    cache: dict[tuple[int, float], np.ndarray] = {}
+
+    def direction_map(direction: int, lag_ms: float) -> np.ndarray:
+        key = (direction, round(float(lag_ms), 8))
+        if key not in cache:
+            source = plus if direction > 0 else minus
+            lag_s = lag_ms / 1000.0
+            x = source.az_arcmin.to_numpy() - source.az_rate_arcmin_s.to_numpy() * lag_s
+            y = source.el_arcmin.to_numpy() - source.el_rate_arcmin_s.to_numpy() * lag_s
+            points = np.column_stack((x, y))
+            values = source.Amp.to_numpy()
+            finite = np.isfinite(points).all(axis=1) & np.isfinite(values)
+            cache[key] = griddata(points[finite], values[finite],
+                                  (grid_x, grid_y), method="linear")
+        return cache[key]
+
+    radius = np.hypot(grid_x * np.cos(np.deg2rad(model_el_deg)), grid_y)
+    central_mask = radius <= airy_radius_arcmin
+    theta = radius * np.pi / (180.0 * 60.0)
+    wavelength = 3e8 / 8.448e9
+    models = []
+    for width_factor in np.linspace(0.85, 1.15, 7):
+        u = np.pi * 32.0 * theta / (wavelength * width_factor)
+        models.append(np.where(u == 0, 1.0, 2.0 * j1(u) / np.where(u == 0, 1.0, u)))
+    models = [np.abs(model) for model in models]
+
+    records: dict[tuple[float, float], dict[str, float]] = {}
+
+    def evaluate(lag_plus: float, lag_minus: float) -> None:
+        key = (round(float(lag_plus), 8), round(float(lag_minus), 8))
+        if key not in records:
+            a, b = direction_map(1, key[0]), direction_map(-1, key[1])
+            mismatch, overlap = pair_metrics(a, b)
+            records[key] = dict(lag_increasing_ms=key[0], lag_decreasing_ms=key[1],
+                                mismatch=mismatch, overlap=overlap, airy_mse=np.nan)
+
+    coarse_step = max(20.0, step_ms)
+    coarse = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + coarse_step / 2,
+                                      coarse_step), -max_lag_ms, 0.0, max_lag_ms])
+    coarse = coarse[(coarse >= -max_lag_ms) & (coarse <= max_lag_ms)]
+    for lag_plus in progress(coarse, len(coarse), label="Coarse +Az lag"):
+        for lag_minus in coarse:
+            evaluate(lag_plus, lag_minus)
+
+    def choose() -> tuple[float, float]:
+        valid = [record for record in records.values() if np.isfinite(record["mismatch"])]
+        if not valid:
+            raise ValueError("no valid increasing/decreasing lag pair")
+        # Interpolation edges can produce a deceptively small mismatch when
+        # little useful sky remains in common.
+        max_overlap = max(record["overlap"] for record in valid)
+        valid = [record for record in valid if record["overlap"] >= 0.8 * max_overlap]
+        best_mismatch = min(record["mismatch"] for record in valid)
+        tolerance = max(0.05 * best_mismatch, 5e-4)
+        candidates = [record for record in valid
+                      if record["mismatch"] <= best_mismatch + tolerance]
+        for record in candidates:
+            a = direction_map(1, record["lag_increasing_ms"])
+            b = direction_map(-1, record["lag_decreasing_ms"])
+            record["airy_mse"] = airy_main_beam_score(a, b, models, central_mask)
+        best = min(candidates, key=lambda record: (
+            record["airy_mse"], record["mismatch"]))
+        if not np.isfinite(best["airy_mse"]):
+            raise ValueError("not enough central beam coverage for Airy comparison")
+        return best["lag_increasing_ms"], best["lag_decreasing_ms"]
+
+    coarse_plus, coarse_minus = choose()
+    fine_plus = np.arange(max(-max_lag_ms, coarse_plus - coarse_step),
+                          min(max_lag_ms, coarse_plus + coarse_step) + step_ms / 2, step_ms)
+    fine_minus = np.arange(max(-max_lag_ms, coarse_minus - coarse_step),
+                           min(max_lag_ms, coarse_minus + coarse_step) + step_ms / 2, step_ms)
+    for lag_plus in progress(fine_plus, len(fine_plus), label="Fine +Az lag"):
+        for lag_minus in fine_minus:
+            evaluate(lag_plus, lag_minus)
+    best_plus, best_minus = choose()
+    return best_plus, best_minus, pd.DataFrame(records.values())
 
 
 def make_maps(df: pd.DataFrame, xcol: str, ycol: str, grid_x: np.ndarray, grid_y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -274,14 +383,22 @@ def main() -> int:
     p.add_argument("--max-lag-ms", type=float, default=1000.0,
                     help="search lag candidates over +/- this many ms (default: 1000.0)")
     p.add_argument("--lag-step-ms", type=float, default=5.0,
-                    help="step size [ms] between trial lags in the search (default: 5.0)")
+                    help="fine step [ms] for each direction (default: 5.0); coarse search uses at least 20 ms")
     p.add_argument("--grid-size", type=int, default=121,
                     help="number of grid points per axis used when comparing the forward/"
                          "reverse amplitude maps (default: 121)")
+    p.add_argument("--model-el-deg", type=float, default=57.3,
+                    help="elevation [deg] for the Az projection in the Airy comparison (default: 57.3)")
+    p.add_argument("--airy-radius-arcmin", type=float, default=12.0,
+                    help="central radius [arcmin] used only to select among matching lag pairs (default: 12)")
     if len(sys.argv) == 1:
         p.print_help()
         return 1
     args = p.parse_args()
+    if args.max_lag_ms <= 0 or args.lag_step_ms <= 0 or args.grid_size < 5:
+        p.error("--max-lag-ms and --lag-step-ms must be positive; --grid-size must be at least 5")
+    if not (0 <= args.model_el_deg < 90) or args.airy_radius_arcmin <= 0:
+        p.error("--model-el-deg must be in [0,90) and --airy-radius-arcmin must be positive")
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     print("[1/4] Reading and matching input data...", file=sys.stderr, flush=True)
@@ -297,24 +414,26 @@ def main() -> int:
     qx = np.linspace(joined.az_arcmin.quantile(0.01), joined.az_arcmin.quantile(0.99), args.grid_size)
     qy = np.linspace(joined.el_arcmin.quantile(0.01), joined.el_arcmin.quantile(0.99), args.grid_size)
     grid_x, grid_y = np.meshgrid(qx, qy)
-    lags = np.arange(-args.max_lag_ms, args.max_lag_ms + args.lag_step_ms, args.lag_step_ms) / 1000.0
-    print(f"[2/4] Searching {len(lags)} lag candidates...", file=sys.stderr, flush=True)
-    scores = np.array([
-        score_lag(joined, rows, lag, grid_x, grid_y, args.min_snr)
-        for lag in progress(lags, len(lags), label="Lag search")
-    ])
-    if not np.isfinite(scores).any():
-        raise ValueError("lag cannot be fitted: both +Az and -Az rows with enough SNR are required")
-    best_lag = float(lags[np.nanargmin(scores)])
-    joined["az_corrected_arcmin"] = joined.az_arcmin - joined.az_rate_arcmin_s * best_lag
-    joined["el_corrected_arcmin"] = joined.el_arcmin - joined.el_rate_arcmin_s * best_lag
+    print("[2/4] Searching increasing/decreasing lag pairs...", file=sys.stderr, flush=True)
+    lag_plus_ms, lag_minus_ms, search = search_direction_lags(
+        joined, grid_x, grid_y, args.max_lag_ms, args.lag_step_ms,
+        args.min_snr, args.model_el_deg, args.airy_radius_arcmin)
+    sample_lag_s = np.where(joined.direction > 0, lag_plus_ms / 1000.0,
+                            np.where(joined.direction < 0, lag_minus_ms / 1000.0, 0.0))
+    joined["lag_applied_ms"] = sample_lag_s * 1000.0
+    joined["az_corrected_arcmin"] = joined.az_arcmin - joined.az_rate_arcmin_s * sample_lag_s
+    joined["el_corrected_arcmin"] = joined.el_arcmin - joined.el_rate_arcmin_s * sample_lag_s
     joined["az_shift_arcmin"] = joined.az_corrected_arcmin - joined.az_arcmin
     joined["el_shift_arcmin"] = joined.el_corrected_arcmin - joined.el_arcmin
     print("[3/4] Writing result tables...", file=sys.stderr, flush=True)
     corrected_beam_path = args.outdir / f"{args.measurements.stem}_hosei{args.measurements.suffix}"
-    write_corrected_measurements(args.measurements, corrected_beam_path, best_lag)
+    lag_by_epoch = dict(zip(joined["Epoch"], sample_lag_s))
+    write_corrected_measurements(args.measurements, corrected_beam_path, lag_by_epoch)
     joined.to_csv(args.outdir / "matched_and_corrected.csv", index=False)
-    pd.DataFrame({"lag_ms": lags * 1000, "mismatch": scores}).to_csv(args.outdir / "lag_search.csv", index=False)
+    search.to_csv(args.outdir / "lag_search.csv", index=False)
+    selected = search[(np.isclose(search.lag_increasing_ms, lag_plus_ms)) &
+                      (np.isclose(search.lag_decreasing_ms, lag_minus_ms))].iloc[0]
+    pd.DataFrame([selected]).to_csv(args.outdir / "best_lags.csv", index=False)
     pd.DataFrame([dict(row_id=r.row_id, n_samples=len(r.indices), az_rate_arcmin_s=r.az_rate,
                        el_rate_arcmin_s=r.el_rate, direction=r.direction) for r in rows]).to_csv(args.outdir / "scan_rows.csv", index=False)
 
@@ -323,9 +442,13 @@ def main() -> int:
     amp1, phase1 = make_maps(joined, "az_corrected_arcmin", "el_corrected_arcmin", grid_x, grid_y)
     extent = [qx.min(), qx.max(), qy.min(), qy.max()]
     fig, ax = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
-    ax[0, 0].plot(lags * 1000, scores, color="black")
-    ax[0, 0].axvline(best_lag * 1000, color="crimson", label=f"best = {best_lag * 1000:.1f} ms")
-    ax[0, 0].set(xlabel="Assumed lag [ms]", ylabel="Forward/reverse mismatch", title="Lag fit")
+    finite = search[np.isfinite(search.mismatch)]
+    points = ax[0, 0].scatter(finite.lag_increasing_ms, finite.lag_decreasing_ms,
+                              c=finite.mismatch, s=8, cmap="viridis", rasterized=True)
+    ax[0, 0].scatter([lag_plus_ms], [lag_minus_ms], marker="x", color="red",
+                     s=100, label="selected")
+    fig.colorbar(points, ax=ax[0, 0], label="Forward/reverse mismatch")
+    ax[0, 0].set(xlabel="+Az lag [ms]", ylabel="-Az lag [ms]", title="Lag-pair search")
     ax[0, 0].legend()
     for axes, image, title, cmap, vmin, vmax in (
         (ax[0, 1], amp0, "Amplitude: commanded coordinates", "viridis", 0, np.nanmax([amp0, amp1])),
@@ -339,12 +462,17 @@ def main() -> int:
     ax[1, 0].axis("off")
     speed = np.nanmedian(np.abs(joined.loc[joined.direction != 0, "az_rate_arcmin_s"]))
     ax[1, 0].text(0.03, 0.85, "Scan-lag correction", fontsize=15, weight="bold")
-    ax[1, 0].text(0.03, 0.60, f"Best lag: {best_lag * 1000:.1f} ms\nMedian |Az rate|: {speed:.4g} arcmin/s\nTypical |Az shift|: {abs(speed * best_lag):.4g} arcmin", fontsize=13)
+    ax[1, 0].text(
+        0.03, 0.60,
+        f"+Az lag: {lag_plus_ms:.1f} ms\n-Az lag: {lag_minus_ms:.1f} ms\n"
+        f"Median |Az rate|: {speed:.4g} arcmin/s\n"
+        f"Airy score: {selected.airy_mse:.5g}", fontsize=13)
     fig.savefig(args.outdir / "scanning_diagnostics.png", dpi=180)
     plt.close(fig)
     print(f"Matched samples: {len(joined)}")
-    print(f"Best scan lag: {best_lag * 1000:.1f} ms")
-    print(f"Typical Az correction: {abs(speed * best_lag):.5g} arcmin ({abs(speed * best_lag) * 60:.5g} arcsec)")
+    print(f"Best +Az lag: {lag_plus_ms:.1f} ms")
+    print(f"Best -Az lag: {lag_minus_ms:.1f} ms")
+    print(f"Typical |Az correction|: {abs(speed) * max(abs(lag_plus_ms), abs(lag_minus_ms)) / 1000:.5g} arcmin")
     print(f"Corrected beam: {corrected_beam_path}")
     print(f"Outputs: {args.outdir}")
     return 0
