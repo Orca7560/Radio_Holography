@@ -23,7 +23,7 @@
 #   ./YI_Holography.sh I26184Y
 #   ./YI_Holography.sh I26184Y --antenna 34 --cpu 10 --polar
 #   ./YI_Holography.sh I26184Y --dry-run
-#   ./YI_Holography.sh I26184Y --after-corr --invert-lag-sign
+#   ./YI_Holography.sh I26184Y --after-corr
 #
 # パス規則:
 #   SKDファイル: ${OBS_CODE}/${OBS_CODE}${ANTENNA}.skd
@@ -52,18 +52,16 @@ FORWARD_DIRECTION="increasing"
 MASER="false"
 ADD_DELAY="false"
 
-# scanning_effect.py 用。lagサーチは既定1ms刻みで探索し、その値をそのまま
-# corr_fringe_v6.py --scan-lag-ms へ渡す（丸めない）。
-# ※ corr_fringe_v6.py 側は integration window を 10ms（=1/output, output=100
-#   固定）単位でしか動かせないため、1msの倍数かつ10msの倍数でない値を渡すと
-#   corr_fringe_v6.py 自身がエラーで停止する。その場合は --lag-step-ms 10 を
-#   指定するか、--invert-lag-sign 等で得られた値を確認のうえ調整すること。
+# scanning_effect.py は正逆のラグを別々に探索する。corr_fringe.py の
+# output=1000 に合わせ、最終探索は既定1ms刻みで行う。
 MATCH_TOLERANCE=""
 ROW_GAP=""
 MIN_SNR=""
 MAX_LAG_MS=""
 LAG_STEP_MS="1"
 GRID_SIZE=""
+MODEL_EL_DEG=""
+AIRY_RADIUS_ARCMIN=""
 SCAN_BAND=""          # --band-split 使用時に走査lag推定へ使う帯域を明示指定
 
 # Holography.py 用（スライス出力は既定で両方ON。--no-sliceで両方OFF）
@@ -92,12 +90,12 @@ usage() {
                                beamファイル名を beam_NAME.txt / beam_NAME_search.txt
                                にする（未指定時は results / beam.txt / beam_search.txt）
 
-corr_fringe_v6.py 関連:
+corr_fringe.py 関連:
   --cpu N                     gico3実行時のCPUコア数
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
   --forward-direction {increasing,decreasing}
-                               往路のAz方向（既定: increasing）
+                               従来の片方向ラグ指定用。正逆別推定には影響しない
 
 group_up_txt_prd.py 関連:
   --maser                     SNRの代わりにFrequencyを取得する
@@ -108,12 +106,16 @@ scanning_effect.py 関連:
   --row-gap SEC                走査行を区切る時間ギャップ[s]
   --min-snr SNR                lag推定に使う最小SNR
   --max-lag-ms MS              lag探索範囲 ±MS[ms]
-  --lag-step-ms MS              lag探索の刻み幅[ms]（既定: 1、丸めずcorr_fringeへ渡す）
+  --lag-step-ms MS              正逆別lagの最終探索刻み[ms]（既定: 1）
+                               まず20ms以上の粗い格子を探索し、選択候補付近を
+                               この刻みで再探索する
   --grid-size N                 比較用グリッドの分割数
+  --model-el-deg DEG             Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
+  --airy-radius-arcmin ARCMIN    Airy主ビームの比較半径（既定: 12）
   --scan-band BAND              --band-split使用時、lag推定に使う帯域
                                （例: 8192_8256）。band-split時は必須。
-  --invert-lag-sign            推定lagの符号を反転してcorr_fringeへ渡す
-                               （符号の定義がscanning_effect.pyとcorr_fringe_v6.py
+  --invert-lag-sign            正逆両方の推定lagの符号を反転してcorr_fringeへ渡す
+                               （符号の定義がscanning_effect.pyとcorr_fringe.py
                                で逆だった場合に使用）
 
 Holography.py 関連:
@@ -163,6 +165,8 @@ while [[ $# -gt 0 ]]; do
         --max-lag-ms) MAX_LAG_MS="$2"; shift 2 ;;
         --lag-step-ms) LAG_STEP_MS="$2"; shift 2 ;;
         --grid-size) GRID_SIZE="$2"; shift 2 ;;
+        --model-el-deg) MODEL_EL_DEG="$2"; shift 2 ;;
+        --airy-radius-arcmin) AIRY_RADIUS_ARCMIN="$2"; shift 2 ;;
         --scan-band) SCAN_BAND="$2"; shift 2 ;;
         --invert-lag-sign) INVERT_LAG_SIGN="true"; shift ;;
         --polar) POLAR="true"; shift ;;
@@ -239,17 +243,18 @@ step() {
     echo "=== [$1] $2 ==="
 }
 
-# corr_fringe_v6.py --only-corr は gico3実行のみを行うため、band-split /
+# corr_fringe.py --only-corr は gico3実行のみを行うため、band-split /
 # scan-half / forward-direction は意味を持たない（--cpu のみ有効）。
 corr_fringe_corr_opts=()
 [[ -n "$CPU" ]] && corr_fringe_corr_opts+=(--cpu "$CPU")
 
-# corr_fringe_v6.py --only-frinZ（frinZ実行）に共通で渡すオプション
+# corr_fringe.py --only-frinZ（frinZ実行）に共通で渡すオプション
 corr_fringe_common_opts=()
 [[ -n "$CPU" ]] && corr_fringe_common_opts+=(--cpu "$CPU")
 [[ -n "$BAND_SPLIT" ]] && corr_fringe_common_opts+=(--band-split "$BAND_SPLIT")
 [[ "$SCAN_HALF" == "true" ]] && corr_fringe_common_opts+=(--scan-half)
 corr_fringe_common_opts+=(--forward-direction "$FORWARD_DIRECTION")
+corr_fringe_common_opts+=(--skd "$(basename "$SKD_FILE")")
 
 group_up_common_opts=(--antenna "$ANTENNA")
 [[ "$MASER" == "true" ]] && group_up_common_opts+=(--maser)
@@ -263,6 +268,8 @@ scanning_opts=()
 [[ -n "$MAX_LAG_MS" ]] && scanning_opts+=(--max-lag-ms "$MAX_LAG_MS")
 scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 [[ -n "$GRID_SIZE" ]] && scanning_opts+=(--grid-size "$GRID_SIZE")
+[[ -n "$MODEL_EL_DEG" ]] && scanning_opts+=(--model-el-deg "$MODEL_EL_DEG")
+[[ -n "$AIRY_RADIUS_ARCMIN" ]] && scanning_opts+=(--airy-radius-arcmin "$AIRY_RADIUS_ARCMIN")
 
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()
@@ -284,24 +291,27 @@ echo "BEAM_FINAL   : $BEAM_FINAL_FILE"
 [[ -n "$BAND_SPLIT" ]] && echo "BAND_SPLIT   : $BAND_SPLIT (scan-band=$SCAN_BAND, holography-band=$HOLOGRAPHY_BAND)"
 [[ "$AFTER_CORR" == "true" ]] && echo "MODE         : --after-corr（5→6→7→8のみ実行）"
 
-# lag_search.csv から mismatch 最小の lag_ms を取得する共通処理。
-# 丸めは行わず、scanning_effect.py の --lag-step-ms 刻みの値をそのまま返す。
-estimate_lag_ms() {
+# 選択された正逆の組をbest_lags.csvから読み取る。推定結果は丸めない。
+read_lag_pair() {
     local csv_path="$1"
     python3 - "$csv_path" "$INVERT_LAG_SIGN" <<'PYEOF'
+import csv
+import math
 import sys
-import pandas as pd
-
 csv_path, invert = sys.argv[1], sys.argv[2] == "true"
-df = pd.read_csv(csv_path).dropna(subset=["mismatch"])
-if df.empty:
-    print("[ERROR] lag_search.csv に有効なmismatch値がありません。", file=sys.stderr)
+with open(csv_path, newline="", encoding="utf-8") as source:
+    rows = list(csv.DictReader(source))
+if len(rows) != 1:
+    print("[ERROR] best_lags.csv に選択結果が1行必要です。", file=sys.stderr)
     sys.exit(1)
-
-best_lag_ms = float(df.loc[df["mismatch"].idxmin(), "lag_ms"])
+plus = float(rows[0]["lag_increasing_ms"])
+minus = float(rows[0]["lag_decreasing_ms"])
+if not math.isfinite(plus) or not math.isfinite(minus):
+    print("[ERROR] best_lags.csv のラグが有限値ではありません。", file=sys.stderr)
+    sys.exit(1)
 if invert:
-    best_lag_ms = -best_lag_ms
-print(f"{best_lag_ms:.3f}")
+    plus, minus = -plus, -minus
+print(f"{plus:g} {minus:g}")
 PYEOF
 }
 
@@ -310,12 +320,12 @@ if [[ "$AFTER_CORR" != "true" ]]; then
     step 1/8 "fringe_search.py（delay収束）"
     run python3 "$PY_FRINGE_SEARCH" --workdir "$OBS_CODE"
 
-    # ── 2. corr_fringe_v6.py --only-corr : gico3実行 ──
+    # ── 2. corr_fringe.py --only-corr : gico3実行 ──
     step 2/8 "corr_fringe.py --only-corr（gico3実行）"
     run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-corr \
     "${corr_fringe_corr_opts[@]+"${corr_fringe_corr_opts[@]}"}"
 
-    # ── 3. corr_fringe_v6.py --only-frinZ : frinZ実行（lag未補正） ──
+    # ── 3. corr_fringe.py --only-frinZ : frinZ実行（lag未補正） ──
     step 3/8 "corr_fringe.py --only-frinZ（lag未補正）"
     run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-frinZ "${corr_fringe_common_opts[@]}"
 
@@ -353,23 +363,23 @@ step "$STEP5_LABEL" "scanning_effect.py（走査lag推定, 探索刻み ${LAG_ST
 run python3 "$PY_SCANNING" "$BEAM_SEARCH_FILE" "$SKD_FILE" \
     --outdir "${OBS_CODE}/scanning_result" "${scanning_opts[@]}"
 
-LAG_SEARCH_CSV="${OBS_CODE}/scanning_result/lag_search.csv"
+BEST_LAGS_CSV="${OBS_CODE}/scanning_result/best_lags.csv"
 
 if [[ "$DRY_RUN" == "true" ]]; then
-    BEST_LAG_MS="0"
+    BEST_INCREASING_MS="0"
+    BEST_DECREASING_MS="0"
 else
-    # scanning_effect.pyの探索刻み(既定1ms)そのままの値を丸めずに使う。
-    # corr_fringe.pyは10ms刻みしか受け付けないため、10の倍数でない値を
-    # 渡すとcorr_fringe.py自身がエラーで停止する。
-    BEST_LAG_MS=$(estimate_lag_ms "$LAG_SEARCH_CSV")
+    lag_pair=$(read_lag_pair "$BEST_LAGS_CSV")
+    read -r BEST_INCREASING_MS BEST_DECREASING_MS <<< "$lag_pair"
 fi
 
-echo "[INFO] 推定lag（探索刻み ${LAG_STEP_MS} ms, 丸めなし, 符号反転=${INVERT_LAG_SIGN}）: ${BEST_LAG_MS} ms"
+echo "[INFO] 推定lag（Az増加=${BEST_INCREASING_MS} ms, Az減少=${BEST_DECREASING_MS} ms, 符号反転=${INVERT_LAG_SIGN}）"
 
 # ── corr_fringe.py --only-frinZ : frinZ再実行（lag補正あり） ──
-step "$STEP6_LABEL" "corr_fringe.py --only-frinZ（lag補正 ${BEST_LAG_MS} ms）"
+step "$STEP6_LABEL" "corr_fringe.py --only-frinZ（正逆別lag補正）"
 run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-frinZ \
-    --scan-lag-ms "$BEST_LAG_MS" "${corr_fringe_common_opts[@]}"
+    --scan-lag-increasing-ms "$BEST_INCREASING_MS" \
+    --scan-lag-decreasing-ms "$BEST_DECREASING_MS" "${corr_fringe_common_opts[@]}"
 
 # ── group_up_txt_prd.py : beam.txt（最終）作成 ──
 step "$STEP7_LABEL" "group_up_txt_prd.py（${BEAM_FINAL_FILE} 作成）"
