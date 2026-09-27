@@ -48,7 +48,7 @@ from scipy.interpolate import griddata
 # ==========================================
 # 🔧 変更履歴
 # 2026-08-27: 
-# - ルッツの式（Ruze's equation）を用いて、算出したRMS(rms_after_center_tilt)から
+# - ルッツの式（Ruze's equation）を用いて、評価円環で算出したRMSから
 #   6.5GHz～12.5GHzにおける表面効率（η）を計算・プロットする機能を追加。
 # ==========================================
 
@@ -91,6 +91,10 @@ SURFACE_ERR_THRESHOLD_MM = 3.0
 
 # 副鏡ブロッキングとして除外する中心の正方形サイズ（メートル）
 CENTER_BLOCK_SIZE_M = 3.0
+
+# 鏡面誤差 RMS を求める開口面の円環 [m]
+SURFACE_RMS_RADIUS_MIN_M = 2.0
+SURFACE_RMS_RADIUS_MAX_M = 12.0
 
 # 開口面・鏡面のXYマップで共通に使う主目盛り間隔 [m]
 APERTURE_TICK_STEP_M = 5.0
@@ -1131,23 +1135,25 @@ if GENERATE_APERTURE_SLICES:
     plt.close(fig)
 
 # =========================
-# 鏡面誤差計算とマスキング (Tilt除去のみのRMS評価)
+# 鏡面誤差計算とマスキング (Tilt除去後、半径2–12 mのRMS評価)
 # =========================
 surface_tilt_mm = (wavelength / (4 * np.pi) * phase_tilt_only) * 1e3
 
-half_size = CENTER_BLOCK_SIZE_M / 2.0
-center_block_mask = ~((X >= -half_size) & (X <= half_size) & (Y >= -half_size) & (Y <= half_size))
-valid_mask_center = mask & center_block_mask
-
-valid_mask_threshold_tilt = mask & (np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM)
-rms_before_tilt = np.sqrt(np.mean(surface_tilt_mm[mask]**2))
-rms_after_thresh_tilt  = np.sqrt(np.mean(surface_tilt_mm[valid_mask_threshold_tilt]**2))
-rms_after_center_tilt = np.sqrt(np.mean(surface_tilt_mm[valid_mask_center]**2))
+surface_rms_mask = ((R >= SURFACE_RMS_RADIUS_MIN_M) &
+                    (R <= SURFACE_RMS_RADIUS_MAX_M) &
+                    np.isfinite(surface_tilt_mm))
+if not np.any(surface_rms_mask):
+    raise ValueError(f"半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} mに有効な鏡面誤差データがありません。")
+rms_annulus_tilt = np.sqrt(np.mean(surface_tilt_mm[surface_rms_mask]**2))
+threshold_rms_mask = surface_rms_mask & (np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM)
+rms_after_thresh_tilt = (
+    np.sqrt(np.mean(surface_tilt_mm[threshold_rms_mask]**2))
+    if np.any(threshold_rms_mask) else np.nan
+)
 
 print(f"\n--- 鏡面精度評価 (Tilt除去のみ) ---")
-print(f"Surface RMS (除外前): {rms_before_tilt:.3f} mm")
-print(f"Surface RMS (閾値除外後): {rms_after_thresh_tilt:.3f} mm")
-print(f"Surface RMS (中心除外後): {rms_after_center_tilt:.3f} mm")
+print(f"Surface RMS (半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} m、{np.count_nonzero(surface_rms_mask)}画素): {rms_annulus_tilt:.3f} mm")
+print(f"Surface RMS (同じ円環内、|誤差|≤{SURFACE_ERR_THRESHOLD_MM:g} mm): {rms_after_thresh_tilt:.3f} mm")
 
 # =========================
 # 鏡面誤差のプロット出力
@@ -1159,22 +1165,21 @@ extent_ap = [x.min() - dx/2, x.max() + dx/2, y.min() - dy/2, y.max() + dy/2]
 # マスクを外して全域表示
 im0 = axes[0].imshow(surface_tilt_mm, extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
 fig.colorbar(im0, ax=axes[0], label="Surface Error [mm]")
-axes[0].set_title(f"Tilt Only: Before Masking\n(RMS: {rms_before_tilt:.3f} mm)")
+axes[0].set_title("Tilt Only: Full Surface")
 axes[0].set_xlabel("x [m]"), axes[0].set_ylabel("y [m]")
 
 # 表示用の閾値マスク（16m外側も値が閾値以下なら描画させる）
 display_threshold_mask = np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM
 im1 = axes[1].imshow(np.where(display_threshold_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
 fig.colorbar(im1, ax=axes[1], label="Surface Error [mm]")
-axes[1].set_title(f"Tilt Only: Threshold Masking\n(RMS: {rms_after_thresh_tilt:.3f} mm)")
+axes[1].set_title(f"Tilt Only: Threshold Masking\n(2–12 m RMS: {rms_after_thresh_tilt:.3f} mm)")
 axes[1].set_xlabel("x [m]")
 
-# 中心除外マスクのみ適用（外側は描画）
-im2 = axes[2].imshow(np.where(center_block_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
+# RMSに使用した画素だけを表示
+im2 = axes[2].imshow(np.where(surface_rms_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
 fig.colorbar(im2, ax=axes[2], label="Surface Error [mm]")
-axes[2].set_title(f"Tilt Only: Center Masking ({CENTER_BLOCK_SIZE_M}m)\n(RMS: {rms_after_center_tilt:.3f} mm)")
+axes[2].set_title(f"Tilt Only: {SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} m Annulus\n(RMS: {rms_annulus_tilt:.3f} mm)")
 axes[2].set_xlabel("x [m]")
-axes[2].add_patch(plt.Rectangle((-half_size, -half_size), CENTER_BLOCK_SIZE_M, CENTER_BLOCK_SIZE_M, linewidth=1, edgecolor='black', facecolor='none', linestyle='--'))
 
 for ax in axes:
     ax.set_xlim(-20, 20)
@@ -1216,7 +1221,8 @@ if SNR_THRESHOLD is not None:
     surface_filtered_mm = (wavelength / (4 * np.pi) * phase_after_filt) * 1e3
 
     surface_diff = surface_tilt_mm - surface_filtered_mm
-    diff_rms = np.sqrt(np.mean(surface_diff[mask]**2))
+    diff_mask = surface_rms_mask & np.isfinite(surface_diff)
+    diff_rms = np.sqrt(np.mean(surface_diff[diff_mask]**2)) if np.any(diff_mask) else np.nan
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     vmin_val, vmax_val = -SURFACE_ERR_THRESHOLD_MM, SURFACE_ERR_THRESHOLD_MM
@@ -1229,7 +1235,7 @@ if SNR_THRESHOLD is not None:
     
     im2 = axes[2].imshow(surface_diff, extent=extent_ap, origin='lower', cmap='PRGn', vmin=-1.0, vmax=1.0)
     fig.colorbar(im2, ax=axes[2], label="Difference [mm]")
-    axes[2].set_title(f"Impact of Low S/N Data\n(Difference RMS: {diff_rms:.3f} mm)")
+    axes[2].set_title(f"Impact of Low S/N Data\n(2–12 m Difference RMS: {diff_rms:.3f} mm)")
 
     for ax in axes:
         ax.set_xlabel("x [m]")
@@ -1272,8 +1278,8 @@ if ZOOM_SIZE_ARCMIN is not None:
         R_crop = np.sqrt(X_crop**2 + Y_crop**2)
         mask_crop = R_crop < (D / 2)
         
-        center_block_mask_crop = ~((X_crop >= -half_size) & (X_crop <= half_size) & (Y_crop >= -half_size) & (Y_crop <= half_size))
-        valid_mask_center_crop = mask_crop & center_block_mask_crop
+        rms_annulus_crop = ((R_crop >= SURFACE_RMS_RADIUS_MIN_M) &
+                            (R_crop <= SURFACE_RMS_RADIUS_MAX_M))
         
         phase_crop = np.angle(aperture_crop)
         threshold_rad = np.deg2rad(135)
@@ -1283,7 +1289,7 @@ if ZOOM_SIZE_ARCMIN is not None:
         
         fit_mask_crop = mask_crop & (R_crop >= FIT_RADIUS_MIN) & (R_crop <= FIT_RADIUS_MAX)
         
-        if np.sum(fit_mask_crop) > 3:
+        if np.sum(fit_mask_crop) > 3 and np.any(rms_annulus_crop):
             Xf_c = X_crop[fit_mask_crop].flatten()
             Yf_c = Y_crop[fit_mask_crop].flatten()
             Zf_c = phase_crop[fit_mask_crop].flatten()
@@ -1295,22 +1301,21 @@ if ZOOM_SIZE_ARCMIN is not None:
             phase_after_crop = phase_crop - plane_crop
             surface_crop_mm = (wavelength / (4 * np.pi) * phase_after_crop) * 1e3
             
-            rms_crop_after_center = np.sqrt(np.mean(surface_crop_mm[valid_mask_center_crop]**2))
+            rms_crop_mask = rms_annulus_crop & np.isfinite(surface_crop_mm)
+            rms_crop_annulus = np.sqrt(np.mean(surface_crop_mm[rms_crop_mask]**2))
             
             fig, axes = plt.subplots(1, 2, figsize=(12, 5))
             vmin_val, vmax_val = -SURFACE_ERR_THRESHOLD_MM, SURFACE_ERR_THRESHOLD_MM
             
-            im0 = axes[0].imshow(np.where(center_block_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
-            axes[0].set_title(f"Full Data (Tilt Only, Pixel: {dx:.2f}m x {dy:.2f}m)\nRMS: {rms_after_center_tilt:.3f} mm")
+            im0 = axes[0].imshow(np.where(surface_rms_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
+            axes[0].set_title(f"Full Data (Tilt Only, Pixel: {dx:.2f}m x {dy:.2f}m)\n2–12 m RMS: {rms_annulus_tilt:.3f} mm")
             axes[0].set_xlabel("x [m]"), axes[0].set_ylabel("y [m]")
-            axes[0].add_patch(plt.Rectangle((-half_size, -half_size), CENTER_BLOCK_SIZE_M, CENTER_BLOCK_SIZE_M, linewidth=1, edgecolor='black', facecolor='none', linestyle='--'))
             
             extent_crop = [x_crop.min() - dx_crop/2, x_crop.max() + dx_crop/2, y_crop.min() - dy_crop/2, y_crop.max() + dy_crop/2]
-            im1 = axes[1].imshow(np.where(center_block_mask_crop, surface_crop_mm, np.nan), extent=extent_crop, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
+            im1 = axes[1].imshow(np.where(rms_crop_mask, surface_crop_mm, np.nan), extent=extent_crop, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
             fig.colorbar(im1, ax=axes[1], label="Surface Error [mm]")
-            axes[1].set_title(f"Cropped ({ZOOM_SIZE_ARCMIN:g}' x {ZOOM_SIZE_ARCMIN:g}', Tilt Only, Pixel: {dx_crop:.2f}m x {dy_crop:.2f}m)\nRMS: {rms_crop_after_center:.3f} mm")
+            axes[1].set_title(f"Cropped ({ZOOM_SIZE_ARCMIN:g}' x {ZOOM_SIZE_ARCMIN:g}', Tilt Only, Pixel: {dx_crop:.2f}m x {dy_crop:.2f}m)\n2–12 m RMS: {rms_crop_annulus:.3f} mm")
             axes[1].set_xlabel("x [m]")
-            axes[1].add_patch(plt.Rectangle((-half_size, -half_size), CENTER_BLOCK_SIZE_M, CENTER_BLOCK_SIZE_M, linewidth=1, edgecolor='black', facecolor='none', linestyle='--'))
             
             for ax in axes:
                 ax.set_xlim(-20, 20)
@@ -1336,19 +1341,19 @@ freq_max = 12.5e9
 freq_array = np.linspace(freq_min, freq_max, 200)
 wavelength_array = c / freq_array
 
-# 中心ブロック除外後のRMS (mm -> m)
-rms_val_m = rms_after_center_tilt * 1e-3
+# 半径2–12 mのRMS (mm -> m)
+rms_val_m = rms_annulus_tilt * 1e-3
 
 # ルッツの式: eta = exp( - (4 * pi * epsilon / lambda)^2 )
 eta_array = np.exp(- (4 * np.pi * rms_val_m / wavelength_array)**2)
 
 fig, ax = plt.subplots(figsize=(8, 6))
 # 求めたRMSに対するグラフ
-ax.plot(freq_array / 1e9, eta_array, label=f'Calculated RMS: {rms_after_center_tilt:.3f} mm', color='blue', linewidth=2.5)
+ax.plot(freq_array / 1e9, eta_array, label=f'Calculated 2–12 m RMS: {rms_annulus_tilt:.3f} mm', color='blue', linewidth=2.5)
 
 # 比較用リファレンス (0.3mm, 0.7mm, 1.0mm)
 for ref_rms_mm in [0.3, 0.7, 1.0]:
-    if abs(ref_rms_mm - rms_after_center_tilt) > 0.05:
+    if abs(ref_rms_mm - rms_annulus_tilt) > 0.05:
         ref_eta = np.exp(- (4 * np.pi * (ref_rms_mm * 1e-3) / wavelength_array)**2)
         ax.plot(freq_array / 1e9, ref_eta, linestyle='--', label=f'Ref RMS: {ref_rms_mm:.1f} mm')
 
