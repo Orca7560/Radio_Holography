@@ -165,8 +165,8 @@ def search(fixed: np.ndarray, moving: pd.DataFrame,
 
 
 def save_diagnostic(path: Path, results: dict, plus: pd.DataFrame,
-                    minus: pd.DataFrame, width: float, grid_size: int) -> None:
-    """Plot a fine central grid; leave the search grid and scores untouched."""
+                    minus: pd.DataFrame, width: float, grid_size: int) -> Path:
+    """Plot a fine central grid; preserve any pre-existing diagnostic image."""
     axis = np.linspace(-width, width, grid_size)
     gx, gy = np.meshgrid(axis, axis)
     fig, axes = plt.subplots(2, 4, figsize=(17, 8), constrained_layout=True)
@@ -197,8 +197,14 @@ def save_diagnostic(path: Path, results: dict, plus: pd.DataFrame,
                      ylabel="El [arcmin]")
             fig.colorbar(im, ax=pane, shrink=0.75)
     fig.suptitle("Central beam; white contour = fixed direction at 50% peak", fontsize=13)
-    fig.savefig(path, dpi=150)
+    destination = path
+    number = 1
+    while destination.exists():
+        destination = path.with_name(f"{path.stem}_{number:03d}{path.suffix}")
+        number += 1
+    fig.savefig(destination, dpi=150)
     plt.close(fig)
+    return destination
 
 
 def main() -> int:
@@ -273,14 +279,16 @@ def main() -> int:
                      "normalized_xcorr": float(best.xcorr),
                      "overlap_pixels": int(best.overlap_pixels)})
     pd.DataFrame(rows).to_csv(args.outdir / "best_lags_xcorr.csv", index=False)
-    save_diagnostic(args.outdir / "scanning_xcorr_diagnostics.png", results,
-                    plus, minus, args.plot_width_arcmin, args.plot_grid_size)
+    diagnostic_path = save_diagnostic(args.outdir / "scanning_xcorr_diagnostics.png",
+                                      results, plus, minus,
+                                      args.plot_width_arcmin, args.plot_grid_size)
     for result in rows:
         print(f"{result['fixed_direction']} fixed, {result['moving_direction']} shifted: "
               f"lag={result['best_moving_lag_ms']:g} ms, "
               f"r={result['normalized_xcorr']:.5f}, "
               f"pixels={result['overlap_pixels']}")
     print("These are alternative relative alignments, not two independent absolute lags.")
+    print(f"Diagnostic image: {diagnostic_path}")
     print(f"Outputs: {args.outdir}")
     return 0
 
