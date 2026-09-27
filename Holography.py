@@ -104,6 +104,11 @@ BASELINE_EXCLUDE_ARCMIN = 40.0
 # ガウシアンフィッティングに使用するメインビームの下限(dB)
 GAUSS_FIT_CUTOFF_DB = -5.0
 
+# 二次元ガウスによるメインビーム中心・形状の評価範囲 [arcmin]
+BEAM_FIT_RADIUS_ARCMIN = 8.0
+# SNR_THRESHOLD 以上のセルに限定したい場合は True
+BEAM_FIT_USE_SNR_MASK = False
+
 # =========================
 # コマンドライン引数
 # =========================
@@ -690,6 +695,110 @@ if np.any(~valid_cells):
     snr_grid = griddata((Y_valid, X_valid), snr_grid[valid_cells], (Y_all, X_all), method='nearest')
 
 beam_grid_amp = np.abs(beam_grid)
+
+
+def evaluate_main_beam(amp_map, occupied, az_axis, el_axis, snr_map,
+                       fit_radius, snr_threshold=None):
+    """実測セルの主ビームに軸平行の二次元ガウスを当てはめる。"""
+    x_grid, y_grid = np.meshgrid(az_axis, el_axis)
+    usable = occupied & np.isfinite(amp_map) & (amp_map > 0)
+    if snr_threshold is not None:
+        usable &= np.isfinite(snr_map) & (snr_map >= snr_threshold)
+    if not np.any(usable):
+        raise ValueError("ビームフィットに使用できるセルがありません。")
+
+    peak_index = np.nanargmax(np.where(usable, amp_map, np.nan))
+    peak_iy, peak_ix = np.unravel_index(peak_index, amp_map.shape)
+    peak_x, peak_y = az_axis[peak_ix], el_axis[peak_iy]
+    fit_mask = usable & (np.hypot(x_grid - peak_x, y_grid - peak_y) <= fit_radius)
+    if np.count_nonzero(fit_mask) < 10:
+        raise ValueError("主ビーム内の有効セルが10個未満です。フィット範囲を広げてください。")
+
+    peak_amplitude = amp_map[peak_iy, peak_ix]
+    fit_x, fit_y = x_grid[fit_mask], y_grid[fit_mask]
+    fit_amp = amp_map[fit_mask] / peak_amplitude
+
+    def gaussian(coords, amplitude, x0, y0, sigma_x, sigma_y, baseline):
+        x, y = coords
+        return baseline + amplitude * np.exp(-0.5 * (
+            ((x - x0) / sigma_x) ** 2 + ((y - y0) / sigma_y) ** 2))
+
+    # 8.448 GHz、32 m のビーム幅を初期値に使用。フィット後の幅は自由パラメータ。
+    initial_sigma = (1.2 * wavelength / D / arcmin_to_rad) / 2.355
+    min_sigma = max(min(np.diff(az_axis).min(), np.diff(el_axis).min()) / 4, 0.05)
+    popt, _ = curve_fit(
+        gaussian, (fit_x, fit_y), fit_amp,
+        p0=(1.0, peak_x, peak_y, max(initial_sigma, min_sigma),
+            max(initial_sigma, min_sigma), 0.0),
+        bounds=([0, peak_x - fit_radius, peak_y - fit_radius,
+                 min_sigma, min_sigma, -0.5],
+                [2, peak_x + fit_radius, peak_y + fit_radius,
+                 fit_radius * 2, fit_radius * 2, 0.5]),
+        maxfev=20000,
+    )
+    fitted = gaussian((x_grid, y_grid), *popt) * peak_amplitude
+    residual = amp_map[fit_mask] - fitted[fit_mask]
+    return {
+        "parameters": popt, "fitted": fitted, "fit_mask": fit_mask,
+        "peak_amplitude": peak_amplitude, "peak_cell": (peak_x, peak_y),
+        "residual_rms_fraction": np.sqrt(np.mean(residual ** 2)) / peak_amplitude,
+        "n_cells": int(np.count_nonzero(fit_mask)),
+    }
+
+
+try:
+    fit_result = evaluate_main_beam(
+        beam_grid_amp, valid_cells, tx_arcmin, ty_arcmin, snr_grid,
+        BEAM_FIT_RADIUS_ARCMIN,
+        SNR_THRESHOLD if BEAM_FIT_USE_SNR_MASK else None,
+    )
+except (ValueError, RuntimeError) as exc:
+    print(f"メインビームのガウスフィットを実行できませんでした: {exc}")
+else:
+    amplitude_fit, az0, el0, sigma_az, sigma_el, baseline_fit = fit_result["parameters"]
+    center_offset = np.hypot(az0, el0)
+    print(f"適用したピーク基準の座標補正: Az={az_offset:+.3f}', El={el_offset:+.3f}'")
+    residual_rms = fit_result["residual_rms_fraction"]
+    print(f"補正後のメインビーム中心: Az={az0:+.3f}', El={el0:+.3f}' (原点から {center_offset:.3f}' = {center_offset*60:.1f} arcsec)")
+    print(f"主ビーム内の振幅残差 RMS: {residual_rms:.4f} (最大振幅比 {100*residual_rms:.2f}%, {fit_result['n_cells']} セル)")
+    print(f"ガウス FWHM: Az={2.355*sigma_az:.3f}', El={2.355*sigma_el:.3f}'")
+
+    summary = pd.DataFrame([{
+        "az_center_arcmin": az0, "el_center_arcmin": el0,
+        "applied_az_offset_arcmin": az_offset, "applied_el_offset_arcmin": el_offset,
+        "center_offset_arcmin": center_offset, "center_offset_arcsec": center_offset * 60,
+        "amplitude_residual_rms_over_peak": residual_rms,
+        "fwhm_az_arcmin": 2.355 * sigma_az, "fwhm_el_arcmin": 2.355 * sigma_el,
+        "peak_amplitude": fit_result["peak_amplitude"],
+        "gaussian_amplitude_over_peak": amplitude_fit,
+        "gaussian_baseline_over_peak": baseline_fit,
+        "fit_radius_arcmin": BEAM_FIT_RADIUS_ARCMIN,
+        "snr_threshold": SNR_THRESHOLD if BEAM_FIT_USE_SNR_MASK else np.nan,
+        "n_fit_cells": fit_result["n_cells"],
+    }])
+    summary.to_csv(os.path.join(OUT_DIR, "main_beam_gaussian_fit.csv"), index=False)
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharex=True, sharey=True)
+    displayed = np.where(fit_result["fit_mask"], beam_grid_amp / fit_result["peak_amplitude"], np.nan)
+    fitted = np.where(fit_result["fit_mask"], fit_result["fitted"] / fit_result["peak_amplitude"], np.nan)
+    panels = (displayed, fitted, displayed - fitted)
+    titles = ("Measured / peak", "Gaussian fit / peak", "Residual / peak")
+    for ax, panel, title in zip(axes, panels, titles):
+        im = ax.pcolormesh(tx_arcmin, ty_arcmin, panel, shading="auto", cmap="RdBu_r" if title.startswith("Residual") else "viridis")
+        ax.plot(0, 0, "+", color="white", markeredgewidth=1.5, markersize=9)
+        ax.plot(az0, el0, "x", color="red", markeredgewidth=1.7, markersize=8)
+        ax.set_title(title)
+        ax.set_xlabel("Az offset [arcmin]")
+        ax.set_aspect("equal")
+        ax.set_xlim(az0 + BEAM_FIT_RADIUS_ARCMIN, az0 - BEAM_FIT_RADIUS_ARCMIN)
+        ax.set_ylim(el0 - BEAM_FIT_RADIUS_ARCMIN, el0 + BEAM_FIT_RADIUS_ARCMIN)
+        fig.colorbar(im, ax=ax)
+    axes[0].set_ylabel("El offset [arcmin]")
+    fig.suptitle(f"Center offset: {center_offset*60:.1f} arcsec   Residual RMS / peak: {100*residual_rms:.2f}%")
+    fig.tight_layout()
+    save_figure(fig, os.path.join(OUT_DIR, "main_beam_gaussian_fit.png"), dpi=150)
+    plt.close(fig)
+
 extent_vals = [tx_arcmin.max(), tx_arcmin.min(), ty_arcmin.min(), ty_arcmin.max()] 
 
 # =========================
