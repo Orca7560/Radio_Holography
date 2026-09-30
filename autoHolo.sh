@@ -11,27 +11,58 @@ usage() {
     cat <<'EOF'
 使い方: autoHolo.sh OBS_CODE [オプション]
 
-観測コード:
-  OBS_CODE                    観測コード（例: I26184Y）。先頭の YYDDD を観測日とする
+位置引数:
+  OBS_CODE                    観測コード（例: I26184Y）。YYDDD を観測日とする
 
-autoHolo.sh 固有のオプション:
-  --dat-day-offset DAYS       .dat ファイルの日付 - 観測日の日数（既定: 2）
-                               例: 観測日より2日後の .dat は 2、同日は 0
+autoHolo.sh 固有:
+  --dat-day-offset DAYS       .datの日付 - 観測日の日数（既定: 2）
+                               2=観測日より2日後、0=同日、-2=2日前
+
+出力・入力（以下は YI_Holography.sh に渡す）:
+  --antenna {32,34}           SKD/PRDに用いるアンテナ（既定: 32）
+  --output-suffix NAME        results_NAME、beam_NAME.txt 等に保存
+
+相関処理・主走査:
+  --cpu N                     gico3 のCPUコア数
+  --band-split N              8192–8704 MHz をN分割（512の約数）
+  --scan-half                 offset走査の最初と最後の積分長を半分にする
+  --scan-axis {az,el}         主走査軸（既定: az、縦走査は el）
+  --forward-direction {increasing,decreasing}
+                               片方向ラグ指定時の往路方向。正逆別推定には影響しない
+
+beam.txt の作成:
+  --el-drive-speed ARCMIN_S   El走査の駆動速度[arcmin/s]。省略時はPRDから算出
+  --maser                     SNRの代わりにFrequencyを保存
+  --add-delay                 Res-Delay列を追加
+
+走査ラグの推定:
+  --match-tolerance SEC       測定値とSKDの時刻照合の許容差[s]
+  --row-gap SEC               走査列を分ける時間間隔[s]
+  --min-snr SNR               ラグ推定に使うSNRの下限
+  --max-lag-ms MS             ラグの探索範囲 ±MS[ms]
+  --lag-step-ms MS            正逆別ラグの最終探索刻み[ms]（既定: 1）
+  --grid-size N               振幅マップ比較用グリッドの分割数
+  --model-el-deg DEG          Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
+  --airy-radius-arcmin ARCMIN Airy主ビームの比較半径（既定: 12）
+  --scan-band BAND            分割時のラグ推定用帯域（例: 8192_8256）
+  --invert-lag-sign           推定ラグの符号を反転してfrinZへ渡す
+
+ホログラフィ解析:
+  --polar                     開口面の極座標表示を追加
+  --no-slice                  ビーム・開口面のスライス出力を抑制
+  --db-min DB                 dB表示の下限
+  --zoom-size ARCMIN          ビーム図のズーム幅[arcmin]
+  --center-block-size M       中心の副鏡遮蔽領域の一辺[m]
+  --holography-band BAND      分割時の解析用帯域（例: 8192_8256）
+
+実行モード:
+  --after-corr                delay探索・初回相関処理を省き既存結果から解析を再開
+  --dry-run                   YI_Holography.sh の解析コマンドだけ表示
+                               注意: autoHolo.sh の転送・リンク作成は実行される
   -h, --help                  このヘルプを表示して終了
 
-YI_Holography.sh へ渡す主なオプション:
-  --scan-axis {az,el}         主走査軸（既定: az）。縦走査は el を指定
-  --el-drive-speed ARCMIN_S   El走査の駆動速度。省略時はPRD点間から算出
-  --antenna {32,34}           使用するSKD/PRDのアンテナ番号（既定: 32）
-  --cpu N                     gico3 に渡すCPU数
-  --scan-half                 offset走査の端の積分長を半分にする
-  --output-suffix NAME        出力名に接尾辞を追加
-  --after-corr                解析の一部を既存結果からやり直す
-  --dry-run                   YI_Holography.sh の解析コマンドのみ表示
-                               注意: autoHolo.sh の転送・リンク作成は実行される
-
-上記以外の引数も解析サーバーの YI_Holography.sh にそのまま渡す。
-全オプションは解析サーバーで YI_Holography.sh --help を参照。
+--band-split 使用時は --scan-band と --holography-band の両方が必要。
+上記の解析オプションは解析サーバーの YI_Holography.sh にそのまま渡す。
 
 処理の流れ:
   1. 解析サーバー（IP20）に観測コードのディレクトリを作成
@@ -40,9 +71,12 @@ YI_Holography.sh へ渡す主なオプション:
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
 実行例:
-  ./autoHolo.sh I26184Y --scan-axis el --antenna 32
-  ./autoHolo.sh I26184Y --scan-axis el --el-drive-speed 3 --cpu 10
-  ./autoHolo.sh I26184Y --dat-day-offset 0 --scan-axis az
+  ./autoHolo.sh I26184Y --scan-axis az
+  ./autoHolo.sh I26184Y --scan-axis el --antenna 32 --cpu 10
+  ./autoHolo.sh I26184Y --scan-axis el --el-drive-speed 3 --scan-half --polar
+  ./autoHolo.sh I26184Y --scan-axis el --band-split 8 \
+    --scan-band 8192_8256 --holography-band 8192_8256
+  ./autoHolo.sh I26184Y --dat-day-offset 0 --output-suffix test
 EOF
 }
 
