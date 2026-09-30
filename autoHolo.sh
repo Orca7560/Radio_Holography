@@ -9,15 +9,40 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-使い方: autoHolo.sh OBS_CODE [--dat-day-offset DAYS] [YI_Holography.sh のオプション...]
+使い方: autoHolo.sh OBS_CODE [オプション]
 
-  OBS_CODE                  観測コード（例: I26184Y）
-  --dat-day-offset DAYS     .dat の日付 - 観測日の日数（既定: 2）
-  --help, -h                このヘルプを表示
+観測コード:
+  OBS_CODE                    観測コード（例: I26184Y）。先頭の YYDDD を観測日とする
 
-残りのオプションは YI_Holography.sh にそのまま渡します。
-IP61 の /mnt/raid にある OBS_CODE の S1/S2 ペアを転送します。
-リンク名の YYYYDOY は OBS_CODE に記録された観測日を使用します。
+autoHolo.sh 固有のオプション:
+  --dat-day-offset DAYS       .dat ファイルの日付 - 観測日の日数（既定: 2）
+                               例: 観測日より2日後の .dat は 2、同日は 0
+  -h, --help                  このヘルプを表示して終了
+
+YI_Holography.sh へ渡す主なオプション:
+  --scan-axis {az,el}         主走査軸（既定: az）。縦走査は el を指定
+  --el-drive-speed ARCMIN_S   El走査の駆動速度。省略時はPRD点間から算出
+  --antenna {32,34}           使用するSKD/PRDのアンテナ番号（既定: 32）
+  --cpu N                     gico3 に渡すCPU数
+  --scan-half                 offset走査の端の積分長を半分にする
+  --output-suffix NAME        出力名に接尾辞を追加
+  --after-corr                解析の一部を既存結果からやり直す
+  --dry-run                   YI_Holography.sh の解析コマンドのみ表示
+                               注意: autoHolo.sh の転送・リンク作成は実行される
+
+上記以外の引数も解析サーバーの YI_Holography.sh にそのまま渡す。
+全オプションは解析サーバーで YI_Holography.sh --help を参照。
+
+処理の流れ:
+  1. 解析サーバー（IP20）に観測コードのディレクトリを作成
+  2. IP61 の /mnt/raid から同じ時刻の S1/S2 .dat を照合して転送
+  3. 観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
+     /mnt/yi_raid5/Holography/YI_Holography.sh を実行
+
+実行例:
+  ./autoHolo.sh I26184Y --scan-axis el --antenna 32
+  ./autoHolo.sh I26184Y --scan-axis el --el-drive-speed 3 --cpu 10
+  ./autoHolo.sh I26184Y --dat-day-offset 0 --scan-axis az
 EOF
 }
 
