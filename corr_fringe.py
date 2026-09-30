@@ -103,8 +103,8 @@ def parse_skd_schedule(skd_filename, include_positions=False):
     return on_points, offset_scans
 
 
-def infer_scan_direction(scan_start, positions):
-    """Infer the local +Az/-Az direction for one contiguous raster row.
+def infer_scan_direction(scan_start, positions, scan_axis="az"):
+    """Infer the direction on the selected axis for one contiguous raster leg.
 
     A fixed 41-second window can include the next row of a raster scan.  That
     row often runs in the opposite direction, so it must not be used for the
@@ -115,7 +115,8 @@ def infer_scan_direction(scan_start, positions):
 
     # XML epochs are whole seconds while SKD points may be spaced by 0.5 s.
     # Start from the closest commanded point, then follow only adjacent points
-    # on the same elevation with the normal SKD sampling interval.
+    # on the same cross-scan coordinate with the normal SKD sampling interval.
+    primary, cross = (1, 2) if scan_axis == "az" else (2, 1)
     anchor = min(range(len(positions)),
                  key=lambda i: abs((positions[i][0] - scan_start).total_seconds()))
     max_gap = max(1.0, 2.1 * corr_step)
@@ -124,12 +125,12 @@ def infer_scan_direction(scan_start, positions):
     def append_direction(left, right):
         gap = (right[0] - left[0]).total_seconds()
         if (gap <= 0.0 or gap > max_gap or
-                not math.isclose(left[2], right[2], abs_tol=1e-6)):
+                not math.isclose(left[cross], right[cross], abs_tol=1e-6)):
             return False
-        delta_az = right[1] - left[1]
-        if abs(delta_az) <= 1e-6:
+        delta_axis = right[primary] - left[primary]
+        if abs(delta_axis) <= 1e-6:
             return True
-        direction = 1 if delta_az > 0 else -1
+        direction = 1 if delta_axis > 0 else -1
         # Stop at a reversal even if two rows happen to share the same El.
         if directions and direction != directions[0]:
             return False
@@ -150,11 +151,11 @@ def infer_scan_direction(scan_start, positions):
             left, right = positions[index - 1], positions[index]
             gap = (right[0] - left[0]).total_seconds()
             if (gap <= 0.0 or gap > max_gap or
-                    not math.isclose(left[2], right[2], abs_tol=1e-6)):
+                    not math.isclose(left[cross], right[cross], abs_tol=1e-6)):
                 break
-            delta_az = right[1] - left[1]
-            if abs(delta_az) > 1e-6:
-                reverse_directions.append(1 if delta_az > 0 else -1)
+            delta_axis = right[primary] - left[primary]
+            if abs(delta_axis) > 1e-6:
+                reverse_directions.append(1 if delta_axis > 0 else -1)
             index -= 1
         if reverse_directions:
             directions.append(reverse_directions[0])
@@ -170,22 +171,22 @@ def infer_scan_direction(scan_start, positions):
     for left, right in zip(positions, positions[1:]):
         gap = (right[0] - left[0]).total_seconds()
         if (gap <= 0.0 or gap > max_gap or
-                not math.isclose(left[2], right[2], abs_tol=1e-6)):
+                not math.isclose(left[cross], right[cross], abs_tol=1e-6)):
             continue
-        delta_az = right[1] - left[1]
-        if abs(delta_az) <= 1e-6:
+        delta_axis = right[primary] - left[primary]
+        if abs(delta_axis) <= 1e-6:
             continue
         midpoint = left[0] + (right[0] - left[0]) / 2
         distance = abs((midpoint - scan_start).total_seconds())
-        candidates.append((distance, 1 if delta_az > 0 else -1))
+        candidates.append((distance, 1 if delta_axis > 0 else -1))
 
     if candidates:
         candidates.sort(key=lambda item: item[0])
         return candidates[0][1]
 
     raise ValueError(
-        f"{scan_start}: SKDからAz走査方向を判定できません。"
-        "連続する同一ElのAz座標がSKDに必要です。"
+        f"{scan_start}: SKDから{scan_axis.title()}走査方向を判定できません。"
+        f"連続する同一{'El' if scan_axis == 'az' else 'Az'}の{scan_axis.title()}座標がSKDに必要です。"
     )
 
 
@@ -347,7 +348,8 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      add_quick_opt=False, bandscythe_only=False, scan_half=False,
                      scan_lag_ms=0.0, on_points=None, offset_scans=None, band=None,
                      scan_positions=None, forward_direction="increasing",
-                     scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None):
+                     scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None,
+                     scan_axis="az"):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
     processor_name = "fringe" if processor == "fringe" else "frinZ.py"
     band_label = f" [{band}]" if band else ""
@@ -391,10 +393,10 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                 start = datetime.strptime(scan.find('epoch').text.strip(), '%Y/%j %H:%M:%S')
                 start += timedelta(seconds=int(scan.find('skip').text))
                 if not is_on_scan(start, label):
-                    directions[start] = infer_scan_direction(start, scan_positions)
+                    directions[start] = infer_scan_direction(start, scan_positions, scan_axis)
         for direction, lag in direction_lags.items():
             if lag != 0 and direction not in directions.values():
-                raise ValueError(f"Az方向 {direction:+d} のスキャンがありません。SKDを確認してください。")
+                raise ValueError(f"{scan_axis.title()}方向 {direction:+d} のスキャンがありません。SKDを確認してください。")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -525,12 +527,12 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                             tasks = apply_scan_lag(tasks, lag_ms, float(scan_time * output))
                             skipped_count = original_task_count - len(tasks)
                             first = tasks[0]
-                            print(f"  [INFO] Az方向 {direction:+d} を {lag_ms:+g} ms補正: "
+                            print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} を {lag_ms:+g} ms補正: "
                                   f"先頭 --length {first['length']:g} --skip {first['skip']:g} "
                                   f"({first['length'] / output * 1000:g} ms積分)、"
                                   f"範囲外 {skipped_count} 区間をスキップ。Epochは補正前の時刻を保持。")
                         else:
-                            print(f"  [INFO] Az方向 {direction:+d} のラグは0 msです。")
+                            print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} のラグは0 msです。")
 
                     for task in tasks:
                         float_length = float(task['length'])
@@ -635,8 +637,10 @@ def main():
     )
     parser.add_argument(
         "--forward-direction", choices=("increasing", "decreasing"), default="increasing",
-        help="往路のAz方向。increasing=Az増加（既定）、decreasing=Az減少。SKD座標から判定します。"
+        help="往路の走査軸方向。increasing=増加（既定）、decreasing=減少。SKD座標から判定します。"
     )
+    parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
+                        help="走査で変化する軸（既定: az）。")
     parser.add_argument(
         "--skd", metavar="FILE",
         help="使用するSKDファイル名。複数の .skd がある場合は指定してください。"
@@ -748,7 +752,8 @@ def main():
                     offset_scans=offset_scans, 
                     band=band,
                     scan_positions=scan_positions,
-                    forward_direction=args.forward_direction
+                    forward_direction=args.forward_direction,
+                    scan_axis=args.scan_axis
                 )
         else:
             run_fringe_steps(
@@ -764,7 +769,8 @@ def main():
                 on_points=on_points, 
                 offset_scans=offset_scans,
                 scan_positions=scan_positions,
-                forward_direction=args.forward_direction
+                forward_direction=args.forward_direction,
+                scan_axis=args.scan_axis
             )
 
     print("--- 全ての処理が完了しました ---")

@@ -151,18 +151,22 @@ def join_by_time(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float) -> p
     return merged.reset_index(drop=True)
 
 
-def make_rows(df: pd.DataFrame, gap_s: float, rate_floor: float = 1e-5) -> tuple[pd.DataFrame, list[ScanRow]]:
+def make_rows(df: pd.DataFrame, gap_s: float, rate_floor: float = 1e-5,
+              scan_axis: str = "az") -> tuple[pd.DataFrame, list[ScanRow]]:
     """Split samples where time or the commanded scan velocity changes."""
     t = (df.time.astype("int64") / 1e9).to_numpy()
     x, y = df.az_arcmin.to_numpy(), df.el_arcmin.to_numpy()
     dt = np.diff(t)
     vx = np.divide(np.diff(x), dt, out=np.zeros_like(dt), where=dt > 0)
     vy = np.divide(np.diff(y), dt, out=np.zeros_like(dt), where=dt > 0)
-    sign = np.sign(vx)
-    sign[np.abs(vx) < rate_floor] = 0
+    primary, cross = (vx, vy) if scan_axis == "az" else (vy, vx)
+    sign = np.sign(primary)
+    sign[np.abs(primary) < rate_floor] = 0
     new = np.zeros(len(df), dtype=bool)
     new[0] = True
-    new[1:] = (dt > gap_s) | (sign != np.r_[sign[0], sign[:-1]]) | (np.abs(vy) > 0.2)
+    new[1:] = ((dt > gap_s) |
+               ((sign != np.r_[sign[0], sign[:-1]]) &
+                (np.r_[dt[0], dt[:-1]] <= gap_s)) | (np.abs(cross) > 0.2))
     row_id = np.cumsum(new) - 1
     df = df.copy()
     df["row_id"] = row_id
@@ -177,7 +181,8 @@ def make_rows(df: pd.DataFrame, gap_s: float, rate_floor: float = 1e-5) -> tuple
             continue
         az_rate = (local_x[-1] - local_x[0]) / duration
         el_rate = (local_y[-1] - local_y[0]) / duration
-        direction = int(np.sign(az_rate))
+        primary_rate, cross_rate = (az_rate, el_rate) if scan_axis == "az" else (el_rate, az_rate)
+        direction = int(np.sign(primary_rate)) if abs(primary_rate) > rate_floor and abs(cross_rate) < 0.2 else 0
         rows.append(ScanRow(int(rid), ind, az_rate, el_rate, direction))
     row_info = pd.DataFrame(
         [dict(row_id=r.row_id, n_samples=len(r.indices), az_rate_arcmin_s=r.az_rate,
@@ -233,6 +238,8 @@ def main() -> int:
     p.add_argument("--outdir", type=Path, default=Path("scanning_result"))
     p.add_argument("--match-tolerance", type=float, default=0.006, help="timestamp match tolerance [s]")
     p.add_argument("--row-gap", type=float, default=2.0, help="new-row time gap [s]")
+    p.add_argument("--scan-axis", choices=("az", "el"), default="az",
+                   help="varying axis within each scan leg (default: az)")
     p.add_argument("--min-snr", type=float, default=3.0, help="minimum SNR for lag fit")
     p.add_argument("--max-lag-ms", type=float, default=1000.0)
     p.add_argument("--lag-step-ms", type=float, default=5.0)
@@ -242,7 +249,7 @@ def main() -> int:
 
     print("[1/4] Reading and matching input data...", file=sys.stderr, flush=True)
     joined = join_by_time(parse_measurements(args.measurements), parse_skd(args.schedule), args.match_tolerance)
-    joined, rows = make_rows(joined, args.row_gap)
+    joined, rows = make_rows(joined, args.row_gap, scan_axis=args.scan_axis)
     if not rows:
         raise ValueError("could not identify scan rows; check timestamps and --row-gap")
     rate = {r.row_id: (r.az_rate, r.el_rate, r.direction) for r in rows}
@@ -260,7 +267,7 @@ def main() -> int:
         for lag in progress(lags, len(lags), label="Lag search")
     ])
     if not np.isfinite(scores).any():
-        raise ValueError("lag cannot be fitted: both +Az and -Az rows with enough SNR are required")
+        raise ValueError(f"lag cannot be fitted: both +{args.scan_axis.title()} and -{args.scan_axis.title()} rows with enough SNR are required")
     best_lag = float(lags[np.nanargmin(scores)])
     joined["az_corrected_arcmin"] = joined.az_arcmin - joined.az_rate_arcmin_s * best_lag
     joined["el_corrected_arcmin"] = joined.el_arcmin - joined.el_rate_arcmin_s * best_lag
@@ -293,14 +300,15 @@ def main() -> int:
         axes.set(title=title, xlabel="Az offset [arcmin]", ylabel="El offset [arcmin]")
         fig.colorbar(im, ax=axes, shrink=0.8)
     ax[1, 0].axis("off")
-    speed = np.nanmedian(np.abs(joined.loc[joined.direction != 0, "az_rate_arcmin_s"]))
+    speed = np.nanmedian(np.abs(joined.loc[joined.direction != 0, f"{args.scan_axis}_rate_arcmin_s"]))
     ax[1, 0].text(0.03, 0.85, "Scan-lag correction", fontsize=15, weight="bold")
-    ax[1, 0].text(0.03, 0.60, f"Best lag: {best_lag * 1000:.1f} ms\nMedian |Az rate|: {speed:.4g} arcmin/s\nTypical |Az shift|: {abs(speed * best_lag):.4g} arcmin", fontsize=13)
+    axis_name = args.scan_axis.title()
+    ax[1, 0].text(0.03, 0.60, f"Best lag: {best_lag * 1000:.1f} ms\nMedian |{axis_name} rate|: {speed:.4g} arcmin/s\nTypical |{axis_name} shift|: {abs(speed * best_lag):.4g} arcmin", fontsize=13)
     fig.savefig(args.outdir / "scanning_diagnostics.png", dpi=180)
     plt.close(fig)
     print(f"Matched samples: {len(joined)}")
     print(f"Best scan lag: {best_lag * 1000:.1f} ms")
-    print(f"Typical Az correction: {abs(speed * best_lag):.5g} arcmin ({abs(speed * best_lag) * 60:.5g} arcsec)")
+    print(f"Typical {axis_name} correction: {abs(speed * best_lag):.5g} arcmin ({abs(speed * best_lag) * 60:.5g} arcsec)")
     print(f"Corrected beam: {corrected_beam_path}")
     print(f"Outputs: {args.outdir}")
     return 0
