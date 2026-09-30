@@ -123,15 +123,15 @@ def parse_prd_positions(prd_filepath):
 
 
 def prd_offset_at(prd_records, prd_times, epoch, integration_length_s, scan_lag_s,
-                  az_drive_speed=3.0):
+                  az_drive_speed=3.0, scan_axis="az", el_drive_speed=None):
     """Return midpoint pointing and scan-lag-corrected pointing from PRD.
 
     Epoch is the start of the fringe integration.  Since a correlation value
     represents the full interval, the pointing is evaluated at its midpoint.
-    During a constant-El raster scan, the position is derived from the PRD
-    segment start time and the integration length with the commanded Az speed
-    (default: 3 arcmin/s), rather than from the interval's PRD coordinate
-    difference. A positive lag applies theta_corr = theta - velocity * lag.
+    During a constant-El Az scan, the commanded Az speed (default 3 arcmin/s)
+    sets the within-leg rate. In an El scan, the PRD El rate is used unless
+    --el-drive-speed explicitly sets it. Turnarounds use the PRD rates.
+    A positive lag applies theta_corr = theta - velocity * lag.
     """
     sample_time = epoch + timedelta(seconds=integration_length_s / 2.0)
     right = bisect_right(prd_times, sample_time)
@@ -150,14 +150,17 @@ def prd_offset_at(prd_records, prd_times, epoch, integration_length_s, scan_lag_
     # 本走査（El一定）では、PRDの区間始点からの経過時間と指定駆動速度で
     # 位置を決める。向きだけはPRDのAz変化から判定し、折返しの同時Az/El移動は
     # PRD座標をそのまま線形補間する。
-    if az_drive_speed is not None and abs(el_rate) < 1e-10 and abs(az_rate) > 1e-10:
+    if scan_axis == "az" and az_drive_speed is not None and abs(el_rate) < 1e-10 and abs(az_rate) > 1e-10:
         az_rate = np.copysign(az_drive_speed, az_rate)
+    if scan_axis == "el" and el_drive_speed is not None and abs(az_rate) < 1e-10 and abs(el_rate) > 1e-10:
+        el_rate = np.copysign(el_drive_speed, el_rate)
     az = az0 + (sample_time - t0).total_seconds() * az_rate
-    el = el0 + fraction * (el1 - el0)
+    el = el0 + (sample_time - t0).total_seconds() * el_rate
     return az - az_rate * scan_lag_s, el - el_rate * scan_lag_s, az_rate, el_rate
 
 def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_filepath=None, prd_filepath=None,
-                         scan_lag_ms=0.0, az_drive_speed=None, band=None, is_maser=False):
+                         scan_lag_ms=0.0, az_drive_speed=None, band=None, is_maser=False,
+                         scan_axis="az", el_drive_speed=None):
     """
     fringe_resultsのtxtファイルを統合し、オプションに応じて情報を追加する。
     is_maserがTrueの場合、SNRの代わりにFrequencyを取得する。
@@ -268,7 +271,8 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                                 epoch_dt = datetime.strptime(epoch, '%Y/%j %H:%M:%S')
                             az, el, az_rate, el_rate = prd_offset_at(
                                 prd_data, prd_times, epoch_dt, integration_length_s, scan_lag_ms / 1000.0,
-                                az_drive_speed=az_drive_speed
+                                az_drive_speed=az_drive_speed, scan_axis=scan_axis,
+                                el_drive_speed=el_drive_speed
                             )
                             output_parts.extend([
                                 f"{az:.6f}", f"{el:.6f}",
@@ -322,6 +326,10 @@ if __name__ == "__main__":
                         help="PRD座標へ適用する走査遅れ[ms]。既定値: 20。corr_fringe側で補正済みなら0を指定。")
     parser.add_argument("--az-drive-speed", type=float, default=3.0, metavar="ARCMIN_S",
                         help="本走査中のAz駆動速度の絶対値[arcmin/s]（既定値: 3）。")
+    parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
+                        help="本走査で変化する軸（既定: az）。")
+    parser.add_argument("--el-drive-speed", type=float, default=None, metavar="ARCMIN_S",
+                        help="El本走査の駆動速度の絶対値[arcmin/s]。省略時はPRD点間から算出。")
     parser.add_argument("--band-split", type=int, metavar="DIVISIONS",
                         help="8192-8704MHzを指定した分割数で分割した結果を統合します。512の約数を指定してください。")
     parser.add_argument("--maser", action="store_true", help="SNRの代わりにFrequencyを取得してファイルに書き込みます。")
@@ -353,8 +361,10 @@ if __name__ == "__main__":
             print(f"\n===== バンド {band} の処理を開始します =====")
             merge_fringe_results(input_root, prd_filepath=prd_filepath,
                                  add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
-                                 az_drive_speed=args.az_drive_speed, band=band, is_maser=args.maser)
+                                 az_drive_speed=args.az_drive_speed, band=band, is_maser=args.maser,
+                                 scan_axis=args.scan_axis, el_drive_speed=args.el_drive_speed)
     else:
         merge_fringe_results(input_root, output_file=args.output, prd_filepath=prd_filepath,
                              add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
-                             az_drive_speed=args.az_drive_speed, is_maser=args.maser)
+                             az_drive_speed=args.az_drive_speed, is_maser=args.maser,
+                             scan_axis=args.scan_axis, el_drive_speed=args.el_drive_speed)

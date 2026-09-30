@@ -49,6 +49,8 @@ CPU=""
 BAND_SPLIT=""
 SCAN_HALF="false"
 FORWARD_DIRECTION="increasing"
+SCAN_AXIS="az"
+EL_DRIVE_SPEED=""
 MASER="false"
 ADD_DELAY="false"
 
@@ -96,8 +98,10 @@ corr_fringe.py 関連:
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
   --forward-direction {increasing,decreasing}
                                従来の片方向ラグ指定用。正逆別推定には影響しない
+  --scan-axis {az,el}          主走査軸（既定: az）。全解析段階へ引き渡す
 
 group_up_txt_prd.py 関連:
+  --el-drive-speed ARCMIN_S    El走査の駆動速度。省略時はPRDから算出
   --maser                     SNRの代わりにFrequencyを取得する
   --add-delay                 出力にRes-Delay列を追加する
 
@@ -157,6 +161,8 @@ while [[ $# -gt 0 ]]; do
         --band-split) BAND_SPLIT="$2"; shift 2 ;;
         --scan-half) SCAN_HALF="true"; shift ;;
         --forward-direction) FORWARD_DIRECTION="$2"; shift 2 ;;
+        --scan-axis) SCAN_AXIS="$2"; shift 2 ;;
+        --el-drive-speed) EL_DRIVE_SPEED="$2"; shift 2 ;;
         --maser) MASER="true"; shift ;;
         --add-delay) ADD_DELAY="true"; shift ;;
         --match-tolerance) MATCH_TOLERANCE="$2"; shift 2 ;;
@@ -184,6 +190,10 @@ done
 
 if [[ "$ANTENNA" != "32" && "$ANTENNA" != "34" ]]; then
     echo "[ERROR] --antenna は 32 か 34 を指定してください: $ANTENNA" >&2
+    exit 1
+fi
+if [[ "$SCAN_AXIS" != "az" && "$SCAN_AXIS" != "el" ]]; then
+    echo "[ERROR] --scan-axis は az か el を指定してください: $SCAN_AXIS" >&2
     exit 1
 fi
 
@@ -254,14 +264,18 @@ corr_fringe_common_opts=()
 [[ -n "$BAND_SPLIT" ]] && corr_fringe_common_opts+=(--band-split "$BAND_SPLIT")
 [[ "$SCAN_HALF" == "true" ]] && corr_fringe_common_opts+=(--scan-half)
 corr_fringe_common_opts+=(--forward-direction "$FORWARD_DIRECTION")
+corr_fringe_common_opts+=(--scan-axis "$SCAN_AXIS")
 corr_fringe_common_opts+=(--skd "$(basename "$SKD_FILE")")
 
 group_up_common_opts=(--antenna "$ANTENNA")
+group_up_common_opts+=(--scan-axis "$SCAN_AXIS")
+[[ -n "$EL_DRIVE_SPEED" ]] && group_up_common_opts+=(--el-drive-speed "$EL_DRIVE_SPEED")
 [[ "$MASER" == "true" ]] && group_up_common_opts+=(--maser)
 [[ "$ADD_DELAY" == "true" ]] && group_up_common_opts+=(--add-delay)
 [[ -n "$BAND_SPLIT" ]] && group_up_common_opts+=(--band-split "$BAND_SPLIT")
 
 scanning_opts=()
+scanning_opts+=(--scan-axis "$SCAN_AXIS")
 [[ -n "$MATCH_TOLERANCE" ]] && scanning_opts+=(--match-tolerance "$MATCH_TOLERANCE")
 [[ -n "$ROW_GAP" ]] && scanning_opts+=(--row-gap "$ROW_GAP")
 [[ -n "$MIN_SNR" ]] && scanning_opts+=(--min-snr "$MIN_SNR")
@@ -273,6 +287,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()
+holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
 if [[ "$NO_SLICE" != "true" ]]; then
     holography_opts+=(--slice-beam --slice-aperture)
@@ -283,6 +298,7 @@ fi
 
 echo "OBS_CODE     : $OBS_CODE"
 echo "ANTENNA      : $ANTENNA"
+echo "SCAN_AXIS    : $SCAN_AXIS"
 echo "SKD_FILE     : $SKD_FILE"
 echo "PRD_FILE     : $PRD_FILE"
 echo "OUTPUT_DIR   : $OUTPUT_DIR"
@@ -373,7 +389,7 @@ else
     read -r BEST_INCREASING_MS BEST_DECREASING_MS <<< "$lag_pair"
 fi
 
-echo "[INFO] 推定lag（Az増加=${BEST_INCREASING_MS} ms, Az減少=${BEST_DECREASING_MS} ms, 符号反転=${INVERT_LAG_SIGN}）"
+echo "[INFO] 推定lag（${SCAN_AXIS}増加=${BEST_INCREASING_MS} ms, ${SCAN_AXIS}減少=${BEST_DECREASING_MS} ms, 符号反転=${INVERT_LAG_SIGN}）"
 
 # ── corr_fringe.py --only-frinZ : frinZ再実行（lag補正あり） ──
 step "$STEP6_LABEL" "corr_fringe.py --only-frinZ（正逆別lag補正）"

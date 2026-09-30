@@ -72,7 +72,7 @@ def schedule(path: Path) -> pd.DataFrame:
 
 
 def classify(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float,
-             row_gap_s: float) -> pd.DataFrame:
+             row_gap_s: float, scan_axis: str = "az") -> pd.DataFrame:
     left, right = meas.copy(), skd.copy()
     left["time"] = left.time.astype("datetime64[ns]")
     right["time"] = right.time.astype("datetime64[ns]")
@@ -87,12 +87,15 @@ def classify(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float,
     dt = np.diff(seconds)
     vx = np.divide(np.diff(az), dt, out=np.zeros_like(dt), where=dt > 0)
     vy = np.divide(np.diff(el), dt, out=np.zeros_like(dt), where=dt > 0)
-    sign = np.sign(vx)
-    sign[np.abs(vx) < 1e-5] = 0
+    primary, cross = (vx, vy) if scan_axis == "az" else (vy, vx)
+    sign = np.sign(primary)
+    sign[np.abs(primary) < 1e-5] = 0
     boundary = np.zeros(len(data), dtype=bool)
     boundary[0] = True
-    boundary[1:] = ((dt > row_gap_s) | (sign != np.r_[sign[0], sign[:-1]])
-                    | (np.abs(vy) > 0.2))
+    boundary[1:] = ((dt > row_gap_s) |
+                    ((sign != np.r_[sign[0], sign[:-1]]) &
+                     (np.r_[dt[0], dt[:-1]] <= row_gap_s)) |
+                    (np.abs(cross) > 0.2))
     data["row_id"] = np.cumsum(boundary) - 1
     data["az_rate_arcmin_s"] = np.nan
     data["el_rate_arcmin_s"] = np.nan
@@ -106,8 +109,9 @@ def classify(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float,
             continue
         rate_x = (az[inds[-1]] - az[inds[0]]) / duration
         rate_y = (el[inds[-1]] - el[inds[0]]) / duration
-        direction = int(np.sign(rate_x)) if abs(rate_x) > 1e-5 else 0
-        if direction and abs(rate_y) < 0.2:
+        primary_rate, cross_rate = (rate_x, rate_y) if scan_axis == "az" else (rate_y, rate_x)
+        direction = int(np.sign(primary_rate)) if abs(primary_rate) > 1e-5 else 0
+        if direction and abs(cross_rate) < 0.2:
             data.loc[inds, "az_rate_arcmin_s"] = rate_x
             data.loc[inds, "el_rate_arcmin_s"] = rate_y
             data.loc[inds, "direction"] = direction
@@ -165,15 +169,17 @@ def search(fixed: np.ndarray, moving: pd.DataFrame,
 
 
 def save_diagnostic(path: Path, results: dict, plus: pd.DataFrame,
-                    minus: pd.DataFrame, width: float, grid_size: int) -> Path:
+                    minus: pd.DataFrame, width: float, grid_size: int,
+                    scan_axis: str = "az") -> Path:
     """Plot a fine central grid; preserve any pre-existing diagnostic image."""
     axis = np.linspace(-width, width, grid_size)
     gx, gy = np.meshgrid(axis, axis)
     fig, axes = plt.subplots(2, 4, figsize=(17, 8), constrained_layout=True)
     extent = [-width, width, -width, width]
+    axis_name = scan_axis.title()
     for row_index, (name, fixed_data, moving_data) in enumerate((
-            ("+Az fixed / -Az shifted", plus, minus),
-            ("-Az fixed / +Az shifted", minus, plus))):
+            (f"+{axis_name} fixed / -{axis_name} shifted", plus, minus),
+            (f"-{axis_name} fixed / +{axis_name} shifted", minus, plus))):
         table, lag, _ = results[name]
         fixed = amplitude_map(fixed_data, 0, gx, gy)
         moving_raw = amplitude_map(moving_data, 0, gx, gy)
@@ -222,6 +228,8 @@ def main() -> int:
                         help="SKD/beam timestamp matching tolerance in seconds (default: 0.006)")
     parser.add_argument("--row-gap", type=float, default=2.0,
                         help="time gap separating scan rows in seconds (default: 2)")
+    parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
+                        help="varying axis within each scan leg (default: az)")
     parser.add_argument("--min-snr", type=float, default=3,
                         help="minimum SNR for lag search (default: 3)")
     parser.add_argument("--grid-size", type=int, default=121,
@@ -246,11 +254,11 @@ def main() -> int:
             or args.plot_grid_size < 5):
         parser.error("invalid lag/grid/overlap/beam threshold")
     data = classify(measurements(args.measurements), schedule(args.schedule),
-                    args.match_tolerance, args.row_gap)
+                    args.match_tolerance, args.row_gap, args.scan_axis)
     usable = data[data.SNR >= args.min_snr]
     plus, minus = usable[usable.direction == 1], usable[usable.direction == -1]
     if min(len(plus), len(minus)) < 3:
-        raise ValueError("both +Az and -Az scans with enough SNR are required")
+        raise ValueError(f"both +{args.scan_axis.title()} and -{args.scan_axis.title()} scans with enough SNR are required")
     qx = np.linspace(data.az_arcmin.quantile(0.01), data.az_arcmin.quantile(0.99),
                      args.grid_size)
     qy = np.linspace(data.el_arcmin.quantile(0.01), data.el_arcmin.quantile(0.99),
@@ -261,8 +269,9 @@ def main() -> int:
     lags = np.arange(-args.max_lag_ms, args.max_lag_ms + args.lag_step_ms / 2,
                      args.lag_step_ms)
     results = {}
-    for name, fixed, moving in (("+Az fixed / -Az shifted", plus_map, minus),
-                                ("-Az fixed / +Az shifted", minus_map, plus)):
+    axis_name = args.scan_axis.title()
+    for name, fixed, moving in ((f"+{axis_name} fixed / -{axis_name} shifted", plus_map, minus),
+                                (f"-{axis_name} fixed / +{axis_name} shifted", minus_map, plus)):
         print(f"Searching {name}: {len(lags)} trials", file=sys.stderr, flush=True)
         results[name] = search(fixed, moving, gx, gy, lags,
                                args.main_beam_fraction, args.min_pixels,
@@ -270,18 +279,18 @@ def main() -> int:
     args.outdir.mkdir(parents=True, exist_ok=True)
     rows = []
     for name, (table, lag, _) in results.items():
-        table.to_csv(args.outdir / ("lag_search_minus_moving.csv" if name.startswith("+Az")
+        table.to_csv(args.outdir / ("lag_search_minus_moving.csv" if name.startswith(f"+{axis_name}")
                                         else "lag_search_plus_moving.csv"), index=False)
         best = table.loc[np.isclose(table.lag_ms, lag)].iloc[0]
-        rows.append({"fixed_direction": "+Az" if name.startswith("+Az") else "-Az",
-                     "moving_direction": "-Az" if name.startswith("+Az") else "+Az",
+        rows.append({"fixed_direction": f"+{axis_name}" if name.startswith(f"+{axis_name}") else f"-{axis_name}",
+                     "moving_direction": f"-{axis_name}" if name.startswith(f"+{axis_name}") else f"+{axis_name}",
                      "best_moving_lag_ms": lag,
                      "normalized_xcorr": float(best.xcorr),
                      "overlap_pixels": int(best.overlap_pixels)})
     pd.DataFrame(rows).to_csv(args.outdir / "best_lags_xcorr.csv", index=False)
     diagnostic_path = save_diagnostic(args.outdir / "scanning_xcorr_diagnostics.png",
                                       results, plus, minus,
-                                      args.plot_width_arcmin, args.plot_grid_size)
+                                      args.plot_width_arcmin, args.plot_grid_size, args.scan_axis)
     for result in rows:
         print(f"{result['fixed_direction']} fixed, {result['moving_direction']} shifted: "
               f"lag={result['best_moving_lag_ms']:g} ms, "

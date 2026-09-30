@@ -68,6 +68,8 @@ MANUAL_EL_OFFSET_ARCMIN = 0.0
 
 # 偶数スキャン専用のAzオフセット量 [arcmin]
 EVEN_SCAN_AZ_OFFSET_ARCMIN = 0.0
+# El走査で偶数列にだけ適用する任意の手動補正 [arcmin]
+EVEN_SCAN_EL_OFFSET_ARCMIN = 0.0
 
 # スライスグラフ（Az vs Amp/Phase）を生成するかどうか
 GENERATE_SLICES = True
@@ -149,14 +151,16 @@ parser.add_argument(
 )
 parser.add_argument(
     "--slice-beam", action="store_true",
-    help="ビームパターンの Az スライスを出力する。",
+    help="主走査軸に沿うビームパターンのスライスを出力する。",
 )
+parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
+                    help="ビームの主走査軸（既定: az）。格子化と断面図にも使用。")
 parser.add_argument(
     "--beam", action="store_true",
-    help="El=0 のAzスキャンを±20′・最大0 dBでプロットする。",
+    help="横断座標=0 の主走査ビームを±20′・最大0 dBでプロットする。",
 )
 parser.add_argument(
-    "--slice-aperture", "--slice-aperture",
+    "--slice-aperture",
     action="store_true",
     help="開口面位相のスライスを出力する。",
 )
@@ -405,44 +409,52 @@ for column in ("Az_Rate_arcmin_s", "El_Rate_arcmin_s"):
 beam = beam.dropna(subset=["Epoch", "Length", "Amp", "Phase", "SNR", "Az_Offset", "El_Offset"])
 beam["E"] = beam["Amp"] * np.exp(1j * np.deg2rad(beam["Phase"]))
 
-def stationary_el_levels(df):
-    """Return the intended raster-row El levels, excluding turnaround motion."""
-    if "El_Rate_arcmin_s" in df.columns:
+def stationary_cross_levels(df, scan_axis):
+    """Return raster leg levels on the fixed coordinate, excluding turnarounds."""
+    cross = "El" if scan_axis == "az" else "Az"
+    rate = f"{cross}_Rate_arcmin_s"
+    if rate in df.columns:
         stationary = df.loc[
-            np.isclose(df["El_Rate_arcmin_s"].to_numpy(), 0.0, atol=1e-8), "El"
+            np.isclose(df[rate].to_numpy(), 0.0, atol=1e-8), cross
         ].to_numpy()
     else:
-        stationary = df["El"].to_numpy()
+        stationary = df[cross].to_numpy()
     return np.unique(np.round(stationary, 6))
 
 
-def estimate_scan_steps_from_beam(df, el_levels):
-    """Infer sampling from in-row Az samples and the intended El row levels."""
-    d_az = np.abs(np.diff(df["Az"].to_numpy()))
-    if "El_Rate_arcmin_s" in df.columns:
-        in_row = np.isclose(df["El_Rate_arcmin_s"].to_numpy(), 0.0, atol=1e-8)
-        d_az = d_az[in_row[:-1] & in_row[1:]]
-    d_el = np.abs(np.diff(el_levels))
-    valid_az = d_az[(d_az > 0.01) & (d_az < 20.0)]
-    valid_el = d_el[(d_el > 0.01) & (d_el < 20.0)]
-    step_az = np.unique(np.round(valid_az, 3))[np.argmax(np.unique(np.round(valid_az, 3), return_counts=True)[1])] if len(valid_az) > 0 else 3.0
-    step_el = np.unique(np.round(valid_el, 3))[np.argmax(np.unique(np.round(valid_el, 3), return_counts=True)[1])] if len(valid_el) > 0 else 3.0
-    return step_az, step_el
+def estimate_scan_steps_from_beam(df, cross_levels, scan_axis):
+    """Infer within-leg sample spacing and between-leg spacing independently."""
+    primary = "Az" if scan_axis == "az" else "El"
+    cross = "El" if scan_axis == "az" else "Az"
+    samples = np.abs(np.diff(df[primary].to_numpy()))
+    rate = f"{cross}_Rate_arcmin_s"
+    if rate in df.columns:
+        in_leg = np.isclose(df[rate].to_numpy(), 0.0, atol=1e-8)
+        samples = samples[in_leg[:-1] & in_leg[1:]]
+    levels = np.abs(np.diff(cross_levels))
+    def typical(values):
+        valid = np.round(values[(values > 0.01) & (values < 20.0)], 3)
+        if not len(valid):
+            raise ValueError("走査間隔を推定できません。PRD座標と --scan-axis を確認してください。")
+        unique, counts = np.unique(valid, return_counts=True)
+        return unique[np.argmax(counts)]
+    step_primary, step_cross = typical(samples), typical(levels)
+    return (step_primary, step_cross) if scan_axis == "az" else (step_cross, step_primary)
 
 beam = beam.sort_values("Epoch")
 beam["Az"] = beam["Az_Offset"]
 beam["El"] = beam["El_Offset"]
-el_levels = stationary_el_levels(beam)
-if len(el_levels) < 2:
-    raise ValueError("エラー: PRD座標から2本以上の一定El走査列を検出できませんでした。")
-# PRDには折返しのための短いEl移動が入る。これはビーム格子の新しい
-# El列ではないため、最寄りの本走査El行へ割り当てる。
-beam["El_PRD_continuous"] = beam["El"]
-beam["El"] = el_levels[np.abs(beam["El"].to_numpy()[:, None] - el_levels).argmin(axis=1)]
+cross_axis = "El" if args.scan_axis == "az" else "Az"
+cross_levels = stationary_cross_levels(beam, args.scan_axis)
+if len(cross_levels) < 2:
+    raise ValueError(f"PRD座標から2本以上の一定{cross_axis}走査列を検出できませんでした。--scan-axis を確認してください。")
+# 折返し区間の横断座標を、最寄りの本走査列へ割り当てる。
+beam[f"{cross_axis}_PRD_continuous"] = beam[cross_axis]
+beam[cross_axis] = cross_levels[np.abs(beam[cross_axis].to_numpy()[:, None] - cross_levels).argmin(axis=1)]
 df = beam.copy()
-SCAN_STEP_AZ, SCAN_STEP_EL = estimate_scan_steps_from_beam(df, el_levels)
+SCAN_STEP_AZ, SCAN_STEP_EL = estimate_scan_steps_from_beam(df, cross_levels, args.scan_axis)
 print(f"beam.txtのPRD補正済み座標から推定したスキャン間隔 -> Az: {SCAN_STEP_AZ} arcmin, El: {SCAN_STEP_EL} arcmin")
-print("[INFO] PRDの折返し中のEl座標は、最寄りの本走査El行へスナップして格子化します。")
+print(f"[INFO] PRDの折返し中の{cross_axis}座標は、最寄りの本走査列へスナップして格子化します。")
 
 # =========================
 # 変数抽出 ＆ 空間ズレ補正 ＆ 位相補正
@@ -461,11 +473,15 @@ if AUTO_SPACE_ALIGN:
 Az_shifted = Az - az_offset
 El_shifted = El - el_offset
 
-unique_els, el_inverse = np.unique(np.round(El_shifted, 2), return_inverse=True)
-is_even_scan = (el_inverse % 2 == 1)
+cross_shifted = El_shifted if args.scan_axis == "az" else Az_shifted
+_, cross_inverse = np.unique(np.round(cross_shifted, 2), return_inverse=True)
+is_even_scan = (cross_inverse % 2 == 1)
 
 if EVEN_SCAN_AZ_OFFSET_ARCMIN != 0.0:
-    Az_shifted[is_even_scan] += EVEN_SCAN_AZ_OFFSET_ARCMIN
+    if args.scan_axis == "az":
+        Az_shifted[is_even_scan] += EVEN_SCAN_AZ_OFFSET_ARCMIN
+if args.scan_axis == "el" and EVEN_SCAN_EL_OFFSET_ARCMIN != 0.0:
+    El_shifted[is_even_scan] += EVEN_SCAN_EL_OFFSET_ARCMIN
 
 # ONの全測定点を診断図には表示し、Amp > 1 のONだけを補正に使う。
 on_mask = (Az == 0) & (El == 0)
@@ -566,11 +582,15 @@ times_sec = times_sec[valid_scan_mask]
 # El=0 ビームカット（--beam）
 # =========================
 if PLOT_BEAM_CUT:
-    beam_cut_mask = np.isclose(El_orig, 0.0, atol=1e-6) & (np.abs(Az_orig) <= 20.0)
+    cut_main = Az_orig if args.scan_axis == "az" else El_orig
+    cut_cross = El_orig if args.scan_axis == "az" else Az_orig
+    main_label = args.scan_axis.title()
+    cross_label = "El" if args.scan_axis == "az" else "Az"
+    beam_cut_mask = np.isclose(cut_cross, 0.0, atol=1e-6) & (np.abs(cut_main) <= 20.0)
     if not np.any(beam_cut_mask):
-        print("[WARN] --beam: El=0 かつ Az ±20′ 内のデータがないため、出力しません。")
+        print(f"[WARN] --beam: {cross_label}=0 かつ {main_label} ±20′ 内のデータがないため、出力しません。")
     else:
-        az_cut = Az_orig[beam_cut_mask]
+        az_cut = cut_main[beam_cut_mask]
         amp_cut = np.abs(E_corr[beam_cut_mask])
         order = np.argsort(az_cut)
         az_cut, amp_cut = az_cut[order], amp_cut[order]
@@ -581,15 +601,15 @@ if PLOT_BEAM_CUT:
             with np.errstate(divide="ignore"):
                 amp_cut_db = 20.0 * np.log10(amp_cut / peak_cut)
             fig, ax = plt.subplots(figsize=(8, 4.5))
-            ax.plot(az_cut, amp_cut_db, marker="-", markersize=3, linewidth=1.0)
+            ax.plot(az_cut, amp_cut_db, marker=".", markersize=3, linewidth=1.0)
             ax.set_xlim(-60.0, 60.0)
             ax.set_ylim(DB_MIN, 0.0)
-            ax.set_xlabel("Az offset [arcmin]")
+            ax.set_xlabel(f"{main_label} offset [arcmin]")
             ax.set_ylabel("Normalized amplitude [dB]")
-            ax.set_title("Beam Cut at El = 0")
+            ax.set_title(f"Beam Cut at {cross_label} = 0")
             ax.grid(True, linestyle="--", alpha=0.5)
             fig.tight_layout()
-            beam_cut_path = save_figure(fig, os.path.join(OUT_DIR, "beam_cut_el0_dB.png"), dpi=150)
+            beam_cut_path = save_figure(fig, os.path.join(OUT_DIR, f"beam_cut_{cross_label.lower()}0_dB.png"), dpi=150)
             plt.close(fig)
             print(f"[INFO] --beam: 保存しました: {beam_cut_path}")
 
@@ -598,9 +618,15 @@ if PLOT_BEAM_CUT:
 # =========================
 if GENERATE_SLICES:
     print("Generating slice plots and beam-width (FWHM) analysis...")
-    mask_el0 = (El_orig == 0)
+    main_orig = Az_orig if args.scan_axis == "az" else El_orig
+    cross_orig = El_orig if args.scan_axis == "az" else Az_orig
+    main_shifted = Az if args.scan_axis == "az" else El
+    cross_shifted = El if args.scan_axis == "az" else Az
+    main_name = args.scan_axis.title()
+    cross_name = "El" if args.scan_axis == "az" else "Az"
+    mask_el0 = np.isclose(cross_orig, 0.0, atol=1e-6)
     if np.any(mask_el0):
-        Az_el0 = Az[mask_el0]
+        Az_el0 = main_shifted[mask_el0]
         Amp_el0 = np.abs(E_corr[mask_el0])
         Ph_el0 = np.rad2deg(np.angle(E_corr[mask_el0]))
         sort_idx = np.argsort(Az_el0)
@@ -633,34 +659,34 @@ if GENERATE_SLICES:
         axes[0].axhline(-3.0, color='gray', linestyle=':', alpha=0.7, label="-3 dB Line")
         axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
         axes[0].set_ylabel("Normalized Amplitude [dB]")
-        axes[0].set_title("El=0 Scan: Az offset vs Amplitude [dB] & Phase")
+        axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
         axes[0].legend(fontsize=8)
         axes[0].grid(True, linestyle='--', alpha=0.5)
         axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='purple')
-        axes[1].set_xlabel("Az offset [arcmin]")
+        axes[1].set_xlabel(f"{main_name} offset [arcmin]")
         axes[1].set_ylabel("Phase [deg]")
         axes[1].set_ylim(-180, 180)
         axes[1].grid(True, linestyle='--', alpha=0.5)
         fig.tight_layout()
-        save_figure(fig, os.path.join(OUT_DIR, "el0_az_scan_dB_phase.png"), dpi=150)
+        save_figure(fig, os.path.join(OUT_DIR, f"{cross_name.lower()}0_{main_name.lower()}_scan_dB_phase.png"), dpi=150)
         plt.close(fig)
 
-    for el_val_orig in np.unique(El_orig):
-        mask_el = (El_orig == el_val_orig)
-        sort_idx = np.argsort(Az[mask_el])
-        Az_sorted = Az[mask_el][sort_idx]
+    for el_val_orig in np.unique(cross_orig):
+        mask_el = (cross_orig == el_val_orig)
+        sort_idx = np.argsort(main_shifted[mask_el])
+        Az_sorted = main_shifted[mask_el][sort_idx]
         E_sorted = E_corr[mask_el][sort_idx]
-        el_val_actual = np.mean(El[mask_el])
-        el_label = f"El{el_val_actual:+.1f}arcmin".replace("+", "p").replace("-", "m").replace(".", "_")
+        el_val_actual = np.mean(cross_shifted[mask_el])
+        el_label = f"{cross_name}{el_val_actual:+.1f}arcmin".replace("+", "p").replace("-", "m").replace(".", "_")
         for values, ylabel, title, output_dir in (
             (np.abs(E_sorted), "Amplitude", "Amplitude", SLICE_AMP_DIR),
             (np.rad2deg(np.angle(E_sorted)), "Phase [deg]", "Phase", SLICE_PH_DIR),
         ):
             fig, ax = plt.subplots(figsize=(8, 4))
             ax.plot(Az_sorted, values, marker='o', markersize=3, linewidth=1.0)
-            ax.set_xlabel("Az offset [arcmin]")
+            ax.set_xlabel(f"{main_name} offset [arcmin]")
             ax.set_ylabel(ylabel)
-            ax.set_title(f"Az Scan {title} (El = {el_val_actual:+.1f}')")
+            ax.set_title(f"{main_name} Scan {title} ({cross_name} = {el_val_actual:+.1f}')")
             ax.grid(True, linestyle='--', alpha=0.5)
             fig.tight_layout()
             save_figure(fig, os.path.join(output_dir, f"{el_label}.png"), dpi=150)

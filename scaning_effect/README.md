@@ -15,6 +15,12 @@
 python scanning_effect.py correlation_summary.csv schedule.skd --outdir scan_2026184
 ```
 
+El方向に走査する観測では `--scan-axis el` を指定します（省略時は従来通りAz走査）。
+
+```bash
+python scanning_effect.py correlation_summary.csv schedule.skd --scan-axis el --outdir scan_el
+```
+
 標準設定では、時刻を 6 ms 以内で対応付け、SNR 3 以上のデータを使い、\(-1000\)〜\(+1000\) ms の実効遅れを 5 ms 刻みで探索します。必要に応じて、例えば次のように変更できます。
 
 ```bash
@@ -24,7 +30,7 @@ python scanning_effect.py correlation_summary.csv schedule.skd \
 
 ## 原理
 
-Az 正方向・負方向の走査で作った振幅マップが最も一致する遅れ \(\tau\) を選びます。補正は各サンプルごとに
+指定した走査軸の正方向・負方向で作った振幅マップが最も一致する遅れ \(\tau\) を選びます。補正は各サンプルごとに
 
 \[
 \theta_{\rm corr}=\theta_{\rm SKD}-v\tau
