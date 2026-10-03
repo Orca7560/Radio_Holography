@@ -63,6 +63,7 @@ beam.txt の作成:
 処理の流れ:
   1. 解析サーバー（IP20）に観測コードのディレクトリを作成
   2. IP61 の /mnt/raid から同じ時刻の S1/S2 .dat を照合して転送
+     ゲートに pv があれば転送速度と残り時間も表示
   3. 観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
@@ -158,8 +159,22 @@ REMOTE
 echo '=== 2. IP61 の S1/S2 ペアを検証して転送 ==='
 # ゲートから両サーバーに認証し、IP61 → ゲート → 解析サーバーとストリーム転送する。
 # IP61 上で解析サーバーへ SSH する必要はない。
-remote_bash ymgusr@192.168.6.61 "$OBS_CODE" "$DAT_DAY" <<'REMOTE' | \
-    sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
+# IP61 が先頭に送る合計ファイルサイズを読み、pv があれば転送速度と残り時間を表示する。
+receive_with_progress() {
+    local total_size
+    if ! IFS= read -r total_size || [[ ! $total_size =~ ^[0-9]+$ ]]; then
+        echo '[ERROR] IP61 から転送サイズを取得できませんでした。' >&2
+        return 1
+    fi
+    if command -v pv >/dev/null 2>&1; then
+        pv -f -pterb -s "$total_size" | \
+            sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
+    else
+        echo '[INFO] ゲートに pv がないため残り時間は表示できません（転送は続行します）。' >&2
+        sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
+    fi
+}
+remote_bash ymgusr@192.168.6.61 "$OBS_CODE" "$DAT_DAY" <<'REMOTE' | receive_with_progress
 set -euo pipefail
 obs_code=$1
 dat_day=$2
@@ -205,9 +220,13 @@ done
 
 echo "${#s1_files[@]} 組の .dat をゲート経由で転送します。" >&2
 names=()
+total_size=0
 for file in "${s1_files[@]}" "${s2_files[@]}"; do
     names+=("${file##*/}")
+    size=$(stat -c %s -- "$file")
+    total_size=$((total_size + size))
 done
+printf '%s\n' "$total_size"
 tar -C /mnt/raid -cf - -- "${names[@]}"
 REMOTE
 echo 'S1/S2 の転送が完了しました。'
