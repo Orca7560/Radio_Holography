@@ -156,11 +156,13 @@ mkdir -p -- "$1/raw"
 REMOTE
 
 echo '=== 2. IP61 の S1/S2 ペアを検証して転送 ==='
-remote_bash ymgusr@192.168.6.61 "$OBS_CODE" "$DAT_DAY" "$TARGET_DIR" <<'REMOTE'
+# ゲートから両サーバーに認証し、IP61 → ゲート → 解析サーバーとストリーム転送する。
+# IP61 上で解析サーバーへ SSH する必要はない。
+remote_bash ymgusr@192.168.6.61 "$OBS_CODE" "$DAT_DAY" <<'REMOTE' | \
+    sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
 set -euo pipefail
 obs_code=$1
 dat_day=$2
-target_dir=$3
 shopt -s nullglob
 s1_files=(/mnt/raid/"${obs_code}"_ymg1_S1_tid01-"${dat_day}"-*.dat)
 s2_files=(/mnt/raid/"${obs_code}"_ymg1_S2_tid02-"${dat_day}"-*.dat)
@@ -201,9 +203,14 @@ for time in "${!s2_by_time[@]}"; do
     fi
 done
 
-echo "${#s1_files[@]} 組の .dat を corr5_10G に転送します。"
-scp -- "${s1_files[@]}" "${s2_files[@]}" "corr5_10G:${target_dir}/"
+echo "${#s1_files[@]} 組の .dat をゲート経由で転送します。" >&2
+names=()
+for file in "${s1_files[@]}" "${s2_files[@]}"; do
+    names+=("${file##*/}")
+done
+tar -C /mnt/raid -cf - -- "${names[@]}"
 REMOTE
+echo 'S1/S2 の転送が完了しました。'
 
 echo '=== 3. 観測日の .raw リンクを作り YI_Holography.sh を実行 ==='
 remote_bash oper@192.168.0.20 "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
