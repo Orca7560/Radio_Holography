@@ -70,6 +70,8 @@ beam.txt の作成:
   3. 観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
+実行元には Bash・ssh・sshpass・GNU date が必要。Python は解析サーバーで使用。
+
 実行例:
   ./autoHolo.sh I26184Y --scan-axis az
   ./autoHolo.sh I26184Y --scan-axis el --antenna 32 --cpu 10
@@ -105,31 +107,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-for program in ssh sshpass python3; do
+for program in ssh sshpass date; do
     command -v "$program" >/dev/null || { echo "[ERROR] $program が必要です。" >&2; exit 1; }
 done
 
-# DOY の年越しと閏年を日付として計算する。strftime はリンク名の YYYYDOY と同じ書式。
-mapfile -t DAYS < <(python3 - "$OBS_CODE" "$DAT_DAY_OFFSET" <<'PY'
-from datetime import datetime, timedelta
-import sys
-
-code, offset = sys.argv[1:]
-year = 2000 + int(code[1:3])
-doy = int(code[3:6])
-observed = datetime.strptime(f"{year}{doy:03d}", "%Y%j")
-if observed.year != year:  # strptime は平年の 366 日目を翌年へ繰り上げ得る
-    raise SystemExit(f"[ERROR] 観測コードに存在しない DOY: {code}")
-print(observed.strftime("%Y%j"))
-print((observed + timedelta(days=int(offset))).strftime("%Y%j"))
-PY
-)
-if [[ ${#DAYS[@]} -ne 2 ]]; then
-    echo "[ERROR] 観測コードから日付を読み取れません: $OBS_CODE" >&2
+# 観測日のDOYを検証し、UTCで日数を足す（年越し・閏年に対応）。
+OBS_YEAR=$((2000 + 10#${OBS_CODE:1:2}))
+OBS_DOY=$((10#${OBS_CODE:3:3}))
+DAYS_IN_YEAR=365
+if (( OBS_YEAR % 4 == 0 && (OBS_YEAR % 100 != 0 || OBS_YEAR % 400 == 0) )); then
+    DAYS_IN_YEAR=366
+fi
+if (( OBS_DOY < 1 || OBS_DOY > DAYS_IN_YEAR )); then
+    echo "[ERROR] 観測コードに存在しない DOY: $OBS_CODE" >&2
     exit 1
 fi
-OBS_DAY=${DAYS[0]}
-DAT_DAY=${DAYS[1]}
+if [[ $DAT_DAY_OFFSET == -* ]]; then
+    DAT_OFFSET_DAYS=$((-10#${DAT_DAY_OFFSET#-}))
+else
+    DAT_OFFSET_DAYS=$((10#${DAT_DAY_OFFSET#+}))
+fi
+if ! YEAR_START_EPOCH=$(date -u -d "${OBS_YEAR}-01-01" +%s); then
+    echo "[ERROR] 実行元に GNU date が必要です。観測年: $OBS_YEAR" >&2
+    exit 1
+fi
+OBS_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1) * 86400))" +%Y%j)
+DAT_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1 + DAT_OFFSET_DAYS) * 86400))" +%Y%j)
 HOLO_DIR=/mnt/yi_raid5/Holography
 TARGET_DIR=$HOLO_DIR/$OBS_CODE
 
