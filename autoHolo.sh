@@ -189,13 +189,13 @@ for file in "${s2_files[@]}"; do
     fi
 done
 for time in "${!s1_by_time[@]}"; do
-    if [[ ! -v s2_by_time[$time] ]]; then
+    if [[ -z ${s2_by_time[$time]+x} ]]; then
         echo "[ERROR] S1 ${time} に対応する S2 がありません。" >&2
         exit 1
     fi
 done
 for time in "${!s2_by_time[@]}"; do
-    if [[ ! -v s1_by_time[$time] ]]; then
+    if [[ -z ${s1_by_time[$time]+x} ]]; then
         echo "[ERROR] S2 ${time} に対応する S1 がありません。" >&2
         exit 1
     fi
@@ -240,7 +240,7 @@ for file in "${s1_files[@]}"; do
         exit 1
     fi
     time=${BASH_REMATCH[1]}
-    if [[ ! -v s2_by_time[$time] ]]; then
+    if [[ -z ${s2_by_time[$time]+x} ]]; then
         echo "[ERROR] S1 ${time} に対応する S2 がありません。" >&2
         exit 1
     fi
