@@ -54,7 +54,7 @@ EL_DRIVE_SPEED=""
 MASER="false"
 ADD_DELAY="false"
 
-# scanning_effect.py は正逆のラグを別々に探索する。corr_fringe.py の
+# scanning_effect.py は既定で一方固定・他方可動を二通り探索する。corr_fringe.py の
 # output=1000 に合わせ、最終探索は既定1ms刻みで行う。
 MATCH_TOLERANCE=""
 ROW_GAP=""
@@ -64,6 +64,7 @@ LAG_STEP_MS="1"
 GRID_SIZE=""
 MODEL_EL_DEG=""
 AIRY_RADIUS_ARCMIN=""
+BIDIRECTIONAL_LAGS="false"
 SCAN_BAND=""          # --band-split 使用時に走査lag推定へ使う帯域を明示指定
 
 # Holography.py 用（スライス出力は既定で両方ON。--no-sliceで両方OFF）
@@ -115,7 +116,8 @@ scanning_effect.py 関連:
                                この刻みで再探索する
   --grid-size N                 比較用グリッドの分割数
   --model-el-deg DEG             Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
-  --airy-radius-arcmin ARCMIN    Airy主ビームの比較半径（既定: 12）
+  --airy-radius-arcmin ARCMIN    双方向探索で使うAiry主ビーム比較半径（既定: 12）
+  --bidirectional-lags           正逆両方向のlagを組として同時探索（既定: 一方固定の探索）
   --scan-band BAND              --band-split使用時、lag推定に使う帯域
                                （例: 8192_8256）。band-split時は必須。
   --invert-lag-sign            正逆両方の推定lagの符号を反転してcorr_fringeへ渡す
@@ -173,6 +175,7 @@ while [[ $# -gt 0 ]]; do
         --grid-size) GRID_SIZE="$2"; shift 2 ;;
         --model-el-deg) MODEL_EL_DEG="$2"; shift 2 ;;
         --airy-radius-arcmin) AIRY_RADIUS_ARCMIN="$2"; shift 2 ;;
+        --bidirectional-lags) BIDIRECTIONAL_LAGS="true"; shift ;;
         --scan-band) SCAN_BAND="$2"; shift 2 ;;
         --invert-lag-sign) INVERT_LAG_SIGN="true"; shift ;;
         --polar) POLAR="true"; shift ;;
@@ -284,6 +287,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 [[ -n "$GRID_SIZE" ]] && scanning_opts+=(--grid-size "$GRID_SIZE")
 [[ -n "$MODEL_EL_DEG" ]] && scanning_opts+=(--model-el-deg "$MODEL_EL_DEG")
 [[ -n "$AIRY_RADIUS_ARCMIN" ]] && scanning_opts+=(--airy-radius-arcmin "$AIRY_RADIUS_ARCMIN")
+[[ "$BIDIRECTIONAL_LAGS" == "true" ]] && scanning_opts+=(--bidirectional-lags)
 
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()

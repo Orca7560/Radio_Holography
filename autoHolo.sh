@@ -40,6 +40,7 @@ beam.txt の作成:
   --grid-size N               振幅マップ比較用グリッドの分割数
   --model-el-deg DEG          Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
   --airy-radius-arcmin ARCMIN Airy主ビームの比較半径（既定: 12）
+  --bidirectional-lags        正逆両方向のラグを組として同時探索（既定: 一方固定）
   --scan-band BAND            分割時のラグ推定用帯域（例: 8192_8256）
   --invert-lag-sign           推定ラグの符号を反転してfrinZへ渡す
 
