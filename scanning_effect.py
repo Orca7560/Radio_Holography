@@ -6,12 +6,11 @@ time lag tau changes each sample coordinate as
 
     theta_corrected = theta_commanded - velocity * tau.
 
-Independent lags are fitted for increasing and decreasing scan legs on
-the selected --scan-axis (az by default). First
-compare the opposite-direction amplitude maps; among nearly equally matching
-pairs, choose the map closest to an origin-centred Airy (Bessel) main beam.
-The Airy comparison anchors the common map translation, rather than forcing
-real asymmetries to vanish.
+By default, one scan direction is held fixed while the other direction's lag
+is varied. This is repeated with the fixed direction reversed; the alignment
+with the smallest amplitude-map mismatch is selected. These are alternative
+relative alignments, not two independent absolute lags. --bidirectional-lags
+enables the simultaneous two-dimensional search and Airy-based selection.
 
 Usage:
   python scanning_effect.py beam.txt schedule.skd
@@ -33,11 +32,11 @@ Outputs (written under --outdir, default "scanning_result/"):
   <measurements stem>_hosei<suffix>  Copy with each scanning direction's
                                        Epoch shifted by its selected lag.
   matched_and_corrected.csv          Row-classified, lag-corrected samples.
-  lag_search.csv                     Two-dimensional lag candidates and scores.
+  lag_search.csv                     Lag candidates and amplitude-map scores.
   best_lags.csv                      Selected increasing/decreasing lag pair.
   scan_rows.csv                      One row per detected scan leg
                                       (direction, az/el rate, sample count).
-  scanning_diagnostics.png           Lag-pair score map plus amplitude/phase maps
+  scanning_diagnostics.png           Lag scores plus amplitude/phase maps
                                       before and after correction.
 """
 
@@ -276,8 +275,9 @@ def search_direction_lags(
     df: pd.DataFrame, grid_x: np.ndarray, grid_y: np.ndarray,
     max_lag_ms: float, step_ms: float, min_snr: float,
     model_el_deg: float, airy_radius_arcmin: float, scan_axis: str = "az",
+    bidirectional: bool = False,
 ) -> tuple[float, float, pd.DataFrame]:
-    """Coarse two-dimensional search followed by fine local refinement."""
+    """Search one moving direction at a time, or both together if requested."""
     plus = df[(df.direction > 0) & (df.SNR >= min_snr)].copy()
     minus = df[(df.direction < 0) & (df.SNR >= min_snr)].copy()
     if len(plus) < 3 or len(minus) < 3:
@@ -322,18 +322,34 @@ def search_direction_lags(
     coarse = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + coarse_step / 2,
                                       coarse_step), -max_lag_ms, 0.0, max_lag_ms])
     coarse = coarse[(coarse >= -max_lag_ms) & (coarse <= max_lag_ms)]
-    for lag_plus in progress(coarse, len(coarse), label=f"Coarse +{scan_axis.title()} lag"):
-        for lag_minus in coarse:
-            evaluate(lag_plus, lag_minus)
+    if bidirectional:
+        for lag_plus in progress(coarse, len(coarse), label=f"Coarse +{scan_axis.title()} lag"):
+            for lag_minus in coarse:
+                evaluate(lag_plus, lag_minus)
+    else:
+        for lag in progress(coarse, len(coarse), label=f"Coarse one-direction lag"):
+            evaluate(0.0, lag)  # +axis fixed, -axis shifted
+            evaluate(lag, 0.0)  # -axis fixed, +axis shifted
 
-    def choose() -> tuple[float, float]:
-        valid = [record for record in records.values() if np.isfinite(record["mismatch"])]
+    def valid_records(fixed_direction: int | None = None) -> list[dict[str, float]]:
+        valid = [record for record in records.values()
+                 if np.isfinite(record["mismatch"])
+                 and (fixed_direction is None or
+                      record["lag_increasing_ms" if fixed_direction > 0 else "lag_decreasing_ms"] == 0)]
         if not valid:
-            raise ValueError("no valid increasing/decreasing lag pair")
+            raise ValueError("no valid increasing/decreasing lag alignment")
         # Interpolation edges can produce a deceptively small mismatch when
         # little useful sky remains in common.
         max_overlap = max(record["overlap"] for record in valid)
-        valid = [record for record in valid if record["overlap"] >= 0.8 * max_overlap]
+        return [record for record in valid if record["overlap"] >= 0.8 * max_overlap]
+
+    def choose() -> tuple[float, float]:
+        valid = valid_records()
+        if not bidirectional:
+            best = min(valid, key=lambda record: (record["mismatch"],
+                                                  abs(record["lag_increasing_ms"]) +
+                                                  abs(record["lag_decreasing_ms"])))
+            return best["lag_increasing_ms"], best["lag_decreasing_ms"]
         best_mismatch = min(record["mismatch"] for record in valid)
         tolerance = max(0.05 * best_mismatch, 5e-4)
         candidates = [record for record in valid
@@ -348,14 +364,29 @@ def search_direction_lags(
             raise ValueError("not enough central beam coverage for Airy comparison")
         return best["lag_increasing_ms"], best["lag_decreasing_ms"]
 
-    coarse_plus, coarse_minus = choose()
-    fine_plus = np.arange(max(-max_lag_ms, coarse_plus - coarse_step),
-                          min(max_lag_ms, coarse_plus + coarse_step) + step_ms / 2, step_ms)
-    fine_minus = np.arange(max(-max_lag_ms, coarse_minus - coarse_step),
-                           min(max_lag_ms, coarse_minus + coarse_step) + step_ms / 2, step_ms)
-    for lag_plus in progress(fine_plus, len(fine_plus), label=f"Fine +{scan_axis.title()} lag"):
-        for lag_minus in fine_minus:
-            evaluate(lag_plus, lag_minus)
+    if bidirectional:
+        coarse_plus, coarse_minus = choose()
+        fine_plus = np.arange(max(-max_lag_ms, coarse_plus - coarse_step),
+                              min(max_lag_ms, coarse_plus + coarse_step) + step_ms / 2, step_ms)
+        fine_minus = np.arange(max(-max_lag_ms, coarse_minus - coarse_step),
+                               min(max_lag_ms, coarse_minus + coarse_step) + step_ms / 2, step_ms)
+        for lag_plus in progress(fine_plus, len(fine_plus), label=f"Fine +{scan_axis.title()} lag"):
+            for lag_minus in fine_minus:
+                evaluate(lag_plus, lag_minus)
+    else:
+        for fixed_direction in (1, -1):
+            best_on_axis = min(valid_records(fixed_direction),
+                               key=lambda record: record["mismatch"])
+            moving_lag = best_on_axis["lag_decreasing_ms" if fixed_direction > 0
+                                      else "lag_increasing_ms"]
+            fine = np.arange(max(-max_lag_ms, moving_lag - coarse_step),
+                             min(max_lag_ms, moving_lag + coarse_step) + step_ms / 2,
+                             step_ms)
+            for lag in progress(fine, len(fine), label=f"Fine {'-' if fixed_direction > 0 else '+'}{scan_axis.title()} lag"):
+                if fixed_direction > 0:
+                    evaluate(0.0, lag)
+                else:
+                    evaluate(lag, 0.0)
     best_plus, best_minus = choose()
     return best_plus, best_minus, pd.DataFrame(records.values())
 
@@ -386,6 +417,9 @@ def main() -> int:
                     help="time gap [s] that starts a new scan row/leg (default: 2.0)")
     p.add_argument("--scan-axis", choices=("az", "el"), default="az",
                    help="varying axis within each scan leg (default: az)")
+    p.add_argument("--bidirectional-lags", action="store_true",
+                   help="fit increasing/decreasing lags simultaneously; default: hold one "
+                        "direction fixed and scan the other, then swap")
     p.add_argument("--min-snr", type=float, default=3.0,
                     help="minimum SNR for a sample to be used when fitting the lag "
                          "(default: 3.0)")
@@ -423,10 +457,13 @@ def main() -> int:
     qx = np.linspace(joined.az_arcmin.quantile(0.01), joined.az_arcmin.quantile(0.99), args.grid_size)
     qy = np.linspace(joined.el_arcmin.quantile(0.01), joined.el_arcmin.quantile(0.99), args.grid_size)
     grid_x, grid_y = np.meshgrid(qx, qy)
-    print("[2/4] Searching increasing/decreasing lag pairs...", file=sys.stderr, flush=True)
+    search_label = ("increasing/decreasing lag pairs" if args.bidirectional_lags
+                    else "one moving direction at a time")
+    print(f"[2/4] Searching {search_label}...", file=sys.stderr, flush=True)
     lag_plus_ms, lag_minus_ms, search = search_direction_lags(
         joined, grid_x, grid_y, args.max_lag_ms, args.lag_step_ms,
-        args.min_snr, args.model_el_deg, args.airy_radius_arcmin, args.scan_axis)
+        args.min_snr, args.model_el_deg, args.airy_radius_arcmin, args.scan_axis,
+        args.bidirectional_lags)
     sample_lag_s = np.where(joined.direction > 0, lag_plus_ms / 1000.0,
                             np.where(joined.direction < 0, lag_minus_ms / 1000.0, 0.0))
     joined["lag_applied_ms"] = sample_lag_s * 1000.0
@@ -452,13 +489,26 @@ def main() -> int:
     extent = [qx.min(), qx.max(), qy.min(), qy.max()]
     fig, ax = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
     finite = search[np.isfinite(search.mismatch)]
-    points = ax[0, 0].scatter(finite.lag_increasing_ms, finite.lag_decreasing_ms,
-                              c=finite.mismatch, s=8, cmap="viridis", rasterized=True)
-    ax[0, 0].scatter([lag_plus_ms], [lag_minus_ms], marker="x", color="red",
-                     s=100, label="selected")
-    fig.colorbar(points, ax=ax[0, 0], label="Forward/reverse mismatch")
     axis_name = args.scan_axis.title()
-    ax[0, 0].set(xlabel=f"+{axis_name} lag [ms]", ylabel=f"-{axis_name} lag [ms]", title="Lag-pair search")
+    if args.bidirectional_lags:
+        points = ax[0, 0].scatter(finite.lag_increasing_ms, finite.lag_decreasing_ms,
+                                  c=finite.mismatch, s=8, cmap="viridis", rasterized=True)
+        ax[0, 0].scatter([lag_plus_ms], [lag_minus_ms], marker="x", color="red",
+                         s=100, label="selected")
+        fig.colorbar(points, ax=ax[0, 0], label="Forward/reverse mismatch")
+        ax[0, 0].set(xlabel=f"+{axis_name} lag [ms]", ylabel=f"-{axis_name} lag [ms]",
+                     title="Lag-pair search")
+    else:
+        for fixed, moving_col, label in (
+            ("lag_increasing_ms", "lag_decreasing_ms", f"+{axis_name} fixed / -{axis_name} shifted"),
+            ("lag_decreasing_ms", "lag_increasing_ms", f"-{axis_name} fixed / +{axis_name} shifted"),
+        ):
+            curve = finite[np.isclose(finite[fixed], 0)].sort_values(moving_col)
+            ax[0, 0].plot(curve[moving_col], curve.mismatch, label=label)
+        ax[0, 0].scatter([lag_minus_ms or lag_plus_ms], [selected.mismatch],
+                         marker="x", color="red", s=100, label="selected")
+        ax[0, 0].set(xlabel="Moving direction lag [ms]", ylabel="Forward/reverse mismatch",
+                     title="One-direction lag searches")
     ax[0, 0].legend()
     for axes, image, title, cmap, vmin, vmax in (
         (ax[0, 1], amp0, "Amplitude: commanded coordinates", "viridis", 0, np.nanmax([amp0, amp1])),
@@ -476,7 +526,8 @@ def main() -> int:
         0.03, 0.60,
         f"+{axis_name} lag: {lag_plus_ms:.1f} ms\n-{axis_name} lag: {lag_minus_ms:.1f} ms\n"
         f"Median |{axis_name} rate|: {speed:.4g} arcmin/s\n"
-        f"Airy score: {selected.airy_mse:.5g}", fontsize=13)
+        + (f"Airy score: {selected.airy_mse:.5g}" if args.bidirectional_lags
+           else f"Fixed: {'+' if lag_plus_ms == 0 else '-'}{axis_name}"), fontsize=13)
     fig.savefig(args.outdir / "scanning_diagnostics.png", dpi=180)
     plt.close(fig)
     print(f"Matched samples: {len(joined)}")
