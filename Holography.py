@@ -718,6 +718,10 @@ beam_grid, snr_grid = np.zeros((ny, nx), dtype=complex), np.full((ny, nx), np.na
 beam_grid[valid_cells] = beam_grid_sum[valid_cells] / count_grid[valid_cells]
 snr_grid[valid_cells]  = snr_grid_sum[valid_cells] / count_grid[valid_cells]
 
+# 比較用: 観測されたセルだけを平均し、欠損セルは 0 のままにする。
+# ON補正・座標合わせ・格子化は通常の beam_grid と共通。
+beam_grid_raw = beam_grid.copy()
+
 if np.any(~valid_cells):
     Y_valid, X_valid = np.where(valid_cells)
     Y_all, X_all = np.mgrid[0:ny, 0:nx]
@@ -945,6 +949,7 @@ plt.close(fig)
 # FFT -> 開口面電場分布
 # =========================
 aperture = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(beam_grid)))
+aperture_raw = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(beam_grid_raw)))
 
 dtheta_x, dtheta_y = np.mean(np.diff(tx)), np.mean(np.diff(ty))
 dx, dy = wavelength / (nx * dtheta_x), wavelength / (ny * dtheta_y)
@@ -985,6 +990,52 @@ for ax in axes:
     ax.add_patch(plt.Circle((0, 0), D/2, color='black', fill=False, linestyle='--', linewidth=1.5, alpha=0.7))
 save_figure(fig, os.path.join(OUT_DIR, "aperture_field.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
+
+# 欠損セルを 0 とした IFFT。既存の nearest 補間結果とは別ファイルに保存し、
+# 後段の位相傾斜除去・鏡面 RMS の計算には使わない。
+raw_amp = np.abs(aperture_raw)
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+im = axes[0].imshow(raw_amp, extent=extent_aperture, cmap="viridis", origin="lower")
+fig.colorbar(im, ax=axes[0], label="Amplitude")
+axes[0].set_title("Aperture Amplitude (missing cells = 0)")
+with np.errstate(divide='ignore', invalid='ignore'):
+    raw_db = 20 * np.log10(raw_amp / np.max(raw_amp)) if np.max(raw_amp) > 0 else np.full_like(raw_amp, DB_MIN)
+    raw_db = np.clip(raw_db, a_min=DB_MIN, a_max=0)
+im = axes[1].imshow(raw_db, extent=extent_aperture, cmap="inferno", vmin=DB_MIN, vmax=0, origin="lower")
+fig.colorbar(im, ax=axes[1], label="Amplitude [dB]")
+axes[1].set_title("Aperture Amplitude (dB)")
+im = axes[2].imshow(np.rad2deg(np.angle(aperture_raw)), extent=extent_aperture,
+                    cmap="twilight", vmin=-180, vmax=180, origin="lower")
+fig.colorbar(im, ax=axes[2], label="Phase [deg]")
+axes[2].set_title("Aperture Phase (Raw)")
+for ax in axes:
+    ax.set_xlim(-20, 20)
+    ax.set_ylim(-20, 20)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    format_aperture_axes(ax)
+fig.tight_layout()
+save_figure(fig, os.path.join(OUT_DIR, "aperture_field_zero_filled_no_circle.png"), dpi=150)
+plt.close(fig)
+
+# 同一の振幅スケールで比較する。各画像を独立に正規化すると差が見えにくい。
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+shared_max = max(np.max(aperture_amp), np.max(raw_amp))
+for ax, amp, title in zip(axes, (aperture_amp, raw_amp),
+                          ("Nearest interpolation", "Missing cells = 0")):
+    im = ax.imshow(amp, extent=extent_aperture, cmap="viridis", origin="lower",
+                   vmin=0, vmax=shared_max)
+    ax.set_title(title)
+    ax.set_xlim(-20, 20)
+    ax.set_ylim(-20, 20)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    format_aperture_axes(ax)
+fig.colorbar(im, ax=axes, label="Amplitude")
+fig.subplots_adjust(left=0.07, right=0.88, bottom=0.12, top=0.90, wspace=0.28)
+save_figure(fig, os.path.join(OUT_DIR, "aperture_interpolation_comparison.png"), dpi=150)
+plt.close(fig)
+print(f"[INFO] IFFT comparison: {np.count_nonzero(valid_cells)}/{valid_cells.size} observed grid cells")
 
 # =========================
 # 位相処理 (180度補正機能)
