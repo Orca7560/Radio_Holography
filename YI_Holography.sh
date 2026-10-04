@@ -54,8 +54,8 @@ EL_DRIVE_SPEED=""
 MASER="false"
 ADD_DELAY="false"
 
-# scanning_effect.py は既定で一方固定・他方可動を二通り探索する。corr_fringe.py の
-# output=1000 に合わせ、最終探索は既定1ms刻みで行う。
+# scanning_effect.py は既定で一方固定・他方可動を二通り全範囲で探索する。
+# corr_fringe.py の output=1000 に合わせ、既定1ms刻みで行う。
 MATCH_TOLERANCE=""
 ROW_GAP=""
 MIN_SNR=""
@@ -111,9 +111,8 @@ scanning_effect.py 関連:
   --row-gap SEC                走査行を区切る時間ギャップ[s]
   --min-snr SNR                lag推定に使う最小SNR
   --max-lag-ms MS              lag探索範囲 ±MS[ms]
-  --lag-step-ms MS              正逆別lagの最終探索刻み[ms]（既定: 1）
-                               まず20ms以上の粗い格子を探索し、選択候補付近を
-                               この刻みで再探索する
+  --lag-step-ms MS              片方向探索の全範囲の刻み[ms]（既定: 1）
+                               --bidirectional-lags 時は粗探索後の細探索刻み
   --grid-size N                 比較用グリッドの分割数
   --model-el-deg DEG             Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
   --airy-radius-arcmin ARCMIN    双方向探索で使うAiry主ビーム比較半径（既定: 12）

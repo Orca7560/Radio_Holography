@@ -36,7 +36,7 @@ beam.txt の作成:
   --row-gap SEC               走査列を分ける時間間隔[s]
   --min-snr SNR               ラグ推定に使うSNRの下限
   --max-lag-ms MS             ラグの探索範囲 ±MS[ms]
-  --lag-step-ms MS            正逆別ラグの最終探索刻み[ms]（既定: 1）
+  --lag-step-ms MS            片方向探索の全範囲の刻み[ms]（既定: 1）
   --grid-size N               振幅マップ比較用グリッドの分割数
   --model-el-deg DEG          Airy主ビーム比較時のAz射影の仰角（既定: 57.3）
   --airy-radius-arcmin ARCMIN Airy主ビームの比較半径（既定: 12）

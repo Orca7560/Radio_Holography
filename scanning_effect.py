@@ -17,6 +17,7 @@ Usage:
   python scanning_effect.py beam.txt schedule.skd --outdir I26184Y/scanning_result
   python scanning_effect.py beam.txt schedule.skd --max-lag-ms 500 --lag-step-ms 2 \
       --min-snr 5
+  python scanning_effect.py beam.txt schedule.skd --bidirectional-lags
 
 Inputs:
   measurements  Whitespace- or comma-separated correlation summary with at
@@ -286,17 +287,21 @@ def search_direction_lags(
 
     def direction_map(direction: int, lag_ms: float) -> np.ndarray:
         key = (direction, round(float(lag_ms), 8))
-        if key not in cache:
-            source = plus if direction > 0 else minus
-            lag_s = lag_ms / 1000.0
-            x = source.az_arcmin.to_numpy() - source.az_rate_arcmin_s.to_numpy() * lag_s
-            y = source.el_arcmin.to_numpy() - source.el_rate_arcmin_s.to_numpy() * lag_s
-            points = np.column_stack((x, y))
-            values = source.Amp.to_numpy()
-            finite = np.isfinite(points).all(axis=1) & np.isfinite(values)
-            cache[key] = griddata(points[finite], values[finite],
-                                  (grid_x, grid_y), method="linear")
-        return cache[key]
+        if key in cache:
+            return cache[key]
+        source = plus if direction > 0 else minus
+        lag_s = lag_ms / 1000.0
+        x = source.az_arcmin.to_numpy() - source.az_rate_arcmin_s.to_numpy() * lag_s
+        y = source.el_arcmin.to_numpy() - source.el_rate_arcmin_s.to_numpy() * lag_s
+        points = np.column_stack((x, y))
+        values = source.Amp.to_numpy()
+        finite = np.isfinite(points).all(axis=1) & np.isfinite(values)
+        result = griddata(points[finite], values[finite],
+                          (grid_x, grid_y), method="linear")
+        # The exhaustive one-direction search needs only the two fixed maps.
+        if bidirectional or key[1] == 0:
+            cache[key] = result
+        return result
 
     radius = np.hypot(grid_x * np.cos(np.deg2rad(model_el_deg)), grid_y)
     central_mask = radius <= airy_radius_arcmin
@@ -318,24 +323,25 @@ def search_direction_lags(
             records[key] = dict(lag_increasing_ms=key[0], lag_decreasing_ms=key[1],
                                 mismatch=mismatch, overlap=overlap, airy_mse=np.nan)
 
-    coarse_step = max(20.0, step_ms)
-    coarse = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + coarse_step / 2,
-                                      coarse_step), -max_lag_ms, 0.0, max_lag_ms])
-    coarse = coarse[(coarse >= -max_lag_ms) & (coarse <= max_lag_ms)]
     if bidirectional:
+        coarse_step = max(20.0, step_ms)
+        coarse = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + coarse_step / 2,
+                                          coarse_step), -max_lag_ms, 0.0, max_lag_ms])
+        coarse = coarse[(coarse >= -max_lag_ms) & (coarse <= max_lag_ms)]
         for lag_plus in progress(coarse, len(coarse), label=f"Coarse +{scan_axis.title()} lag"):
             for lag_minus in coarse:
                 evaluate(lag_plus, lag_minus)
     else:
-        for lag in progress(coarse, len(coarse), label=f"Coarse one-direction lag"):
+        trials = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + step_ms / 2,
+                                          step_ms), -max_lag_ms, 0.0, max_lag_ms])
+        trials = trials[(trials >= -max_lag_ms) & (trials <= max_lag_ms)]
+        for lag in progress(trials, len(trials), label="Full-range one-direction lag"):
             evaluate(0.0, lag)  # +axis fixed, -axis shifted
             evaluate(lag, 0.0)  # -axis fixed, +axis shifted
 
-    def valid_records(fixed_direction: int | None = None) -> list[dict[str, float]]:
+    def valid_records() -> list[dict[str, float]]:
         valid = [record for record in records.values()
-                 if np.isfinite(record["mismatch"])
-                 and (fixed_direction is None or
-                      record["lag_increasing_ms" if fixed_direction > 0 else "lag_decreasing_ms"] == 0)]
+                 if np.isfinite(record["mismatch"])]
         if not valid:
             raise ValueError("no valid increasing/decreasing lag alignment")
         # Interpolation edges can produce a deceptively small mismatch when
@@ -373,20 +379,6 @@ def search_direction_lags(
         for lag_plus in progress(fine_plus, len(fine_plus), label=f"Fine +{scan_axis.title()} lag"):
             for lag_minus in fine_minus:
                 evaluate(lag_plus, lag_minus)
-    else:
-        for fixed_direction in (1, -1):
-            best_on_axis = min(valid_records(fixed_direction),
-                               key=lambda record: record["mismatch"])
-            moving_lag = best_on_axis["lag_decreasing_ms" if fixed_direction > 0
-                                      else "lag_increasing_ms"]
-            fine = np.arange(max(-max_lag_ms, moving_lag - coarse_step),
-                             min(max_lag_ms, moving_lag + coarse_step) + step_ms / 2,
-                             step_ms)
-            for lag in progress(fine, len(fine), label=f"Fine {'-' if fixed_direction > 0 else '+'}{scan_axis.title()} lag"):
-                if fixed_direction > 0:
-                    evaluate(0.0, lag)
-                else:
-                    evaluate(lag, 0.0)
     best_plus, best_minus = choose()
     return best_plus, best_minus, pd.DataFrame(records.values())
 
@@ -426,7 +418,8 @@ def main() -> int:
     p.add_argument("--max-lag-ms", type=float, default=1000.0,
                     help="search lag candidates over +/- this many ms (default: 1000.0)")
     p.add_argument("--lag-step-ms", type=float, default=5.0,
-                    help="fine step [ms] for each direction (default: 5.0); coarse search uses at least 20 ms")
+                    help="step [ms] over the full range for one-direction search (default: 5.0); "
+                         "fine step for simultaneous search")
     p.add_argument("--grid-size", type=int, default=121,
                     help="number of grid points per axis used when comparing the forward/"
                          "reverse amplitude maps (default: 121)")
