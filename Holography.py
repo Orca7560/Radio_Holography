@@ -22,7 +22,7 @@ Holography.py — 開口面ホログラフィ解析（通常表示／極座標�
 # --- 極座標表示の設定 ---
 # コマンドラインの --polar により有効化される。
 GENERATE_POLAR_MAPS = False
-POLAR_R_MAX_M = None       # None: アンテナ半径(D/2 = 16 m)。20.0等も指定可
+POLAR_R_MAX_M = None       # None: 選択したアンテナ半径(D/2)。20.0等も指定可
 POLAR_DR_M = 0.1           # 半径方向の表示刻み[m]（観測分解能とは別）
 POLAR_N_THETA = 720        # 角度方向の分割数（720なら0.5度刻み）
 POLAR_PHASE_AMP_MIN = 0.0 # 位相表示の振幅閾値/元開口面ピーク（0.1なら10%）
@@ -132,6 +132,7 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input beam.txt --output output --db-min -35 "
         "--zoom-size 30 --center-block-size 2.9\n"
         "  python Holography.py --input beam.txt --output output --scan-width 57\n"
+        "  python Holography.py --input beam.txt --output output --antenna 34\n"
         "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n\n"
         "--input と --output は必須です。"
     ),
@@ -144,6 +145,10 @@ parser.add_argument(
 parser.add_argument(
     "--output", "--out", dest="output_dir", required=True, metavar="DIR",
     help="図・解析結果を保存する出力ディレクトリ。",
+)
+parser.add_argument(
+    "--antenna", type=int, choices=(32, 34), default=32,
+    help="測定アンテナの直径 [m]（既定: 32）。位相傾斜のフィットは32 mで半径2–14 m、34 mで2–15 m。",
 )
 parser.add_argument(
     "--polar", action="store_true",
@@ -240,7 +245,13 @@ if OFFSET_LIMIT_ARCMIN is not None:
 c = 3e8
 f = 8.448e9
 wavelength = c / f
-D = 32.0
+D = float(args.antenna)
+FIT_RADIUS_MIN = 2.0
+FIT_RADIUS_MAX = D / 2 - 2.0
+print(f"Antenna: {D:g} m (aperture radius: {D / 2:g} m)")
+print(f"Phase tilt fit: radius {FIT_RADIUS_MIN:g}–{FIT_RADIUS_MAX:g} m")
+print(f"Surface RMS: radius {SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} m, "
+      f"excluding central {CENTER_BLOCK_SIZE_M:g} × {CENTER_BLOCK_SIZE_M:g} m square")
 arcmin_to_rad = np.pi / (180 * 60)
 
 # ==========================================
@@ -757,7 +768,7 @@ def evaluate_main_beam(amp_map, occupied, az_axis, el_axis, snr_map,
         return baseline + amplitude * np.exp(-0.5 * (
             ((x - x0) / sigma_x) ** 2 + ((y - y0) / sigma_y) ** 2))
 
-    # 8.448 GHz、32 m のビーム幅を初期値に使用。フィット後の幅は自由パラメータ。
+    # 8.448 GHz、選択したアンテナ径のビーム幅を初期値に使用。フィット後の幅は自由パラメータ。
     initial_sigma = (1.2 * wavelength / D / arcmin_to_rad) / 2.355
     min_sigma = max(min(np.diff(az_axis).min(), np.diff(el_axis).min()) / 4, 0.05)
     popt, _ = curve_fit(
@@ -1049,12 +1060,10 @@ phase_unwrapped = phase_corrected
 # =========================
 # チルト(平面)のみのフィットと除去
 # =========================
-FIT_RADIUS_MIN = 2.0
-FIT_RADIUS_MAX = 14.0
 fit_mask = mask & (R >= FIT_RADIUS_MIN) & (R <= FIT_RADIUS_MAX)
 
 if np.sum(fit_mask) < 10:
-    fit_mask = mask
+    raise ValueError(f"半径{FIT_RADIUS_MIN:g}–{FIT_RADIUS_MAX:g} mに位相傾斜のフィットに必要な画素がありません。")
 
 Xf_tilt, Yf_tilt, Zf_tilt = X[fit_mask].flatten(), Y[fit_mask].flatten(), phase_unwrapped[fit_mask].flatten()
 A_tilt = np.c_[Xf_tilt, Yf_tilt, np.ones_like(Xf_tilt)]
@@ -1216,8 +1225,11 @@ if GENERATE_APERTURE_SLICES:
 # =========================
 surface_tilt_mm = (wavelength / (4 * np.pi) * phase_tilt_only) * 1e3
 
+center_block_mask = ((np.abs(X) <= CENTER_BLOCK_SIZE_M / 2) &
+                     (np.abs(Y) <= CENTER_BLOCK_SIZE_M / 2))
 surface_rms_mask = ((R >= SURFACE_RMS_RADIUS_MIN_M) &
                     (R <= SURFACE_RMS_RADIUS_MAX_M) &
+                    ~center_block_mask &
                     np.isfinite(surface_tilt_mm))
 if not np.any(surface_rms_mask):
     raise ValueError(f"半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} mに有効な鏡面誤差データがありません。")
@@ -1245,8 +1257,9 @@ fig.colorbar(im0, ax=axes[0], label="Surface Error [mm]")
 axes[0].set_title("Tilt Only: Full Surface")
 axes[0].set_xlabel("x [m]"), axes[0].set_ylabel("y [m]")
 
-# 表示用の閾値マスク（16m外側も値が閾値以下なら描画させる）
-display_threshold_mask = np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM
+# 表示用の閾値マスク（開口外側も表示し、中心の副鏡ブロッキングは除外）
+display_threshold_mask = ((np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM) &
+                          ~center_block_mask)
 im1 = axes[1].imshow(np.where(display_threshold_mask, surface_tilt_mm, np.nan), extent=extent_ap, origin='lower', cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
 fig.colorbar(im1, ax=axes[1], label="Surface Error [mm]")
 axes[1].set_title(f"Tilt Only: Threshold Masking\n(2–12 m RMS: {rms_after_thresh_tilt:.3f} mm)")
@@ -1356,7 +1369,9 @@ if ZOOM_SIZE_ARCMIN is not None:
         mask_crop = R_crop < (D / 2)
         
         rms_annulus_crop = ((R_crop >= SURFACE_RMS_RADIUS_MIN_M) &
-                            (R_crop <= SURFACE_RMS_RADIUS_MAX_M))
+                            (R_crop <= SURFACE_RMS_RADIUS_MAX_M) &
+                            ~((np.abs(X_crop) <= CENTER_BLOCK_SIZE_M / 2) &
+                              (np.abs(Y_crop) <= CENTER_BLOCK_SIZE_M / 2)))
         
         phase_crop = np.angle(aperture_crop)
         threshold_rad = np.deg2rad(135)
