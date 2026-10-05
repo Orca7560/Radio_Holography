@@ -944,6 +944,7 @@ if ZOOM_SIZE_ARCMIN is not None:
     for ax_zoom in axes_zoom:
         ax_zoom.set_xlim(zoom_half_width, -zoom_half_width)
         ax_zoom.set_ylim(-zoom_half_width, zoom_half_width)
+        ax_zoom.set_aspect('equal', adjustable='box')
         ax_zoom.set_xlabel("Az offset [arcmin]")
         ax_zoom.set_ylabel("El offset [arcmin]")
 
