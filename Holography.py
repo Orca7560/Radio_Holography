@@ -1294,26 +1294,30 @@ for ax in axes:
 save_figure(fig, os.path.join(OUT_DIR, "surface_error_tilt_only.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
 
-# 開口内・中心ブロッキングのみ除外した鏡面誤差を独立した図として保存。
+# 表示は中心ブロッキングのみ除外し、開口外側も残す。RMSは開口内で評価。
+surface_center_display_mask = ~center_block_mask & np.isfinite(surface_tilt_mm)
 fig, ax = plt.subplots(figsize=(8, 7))
-im = ax.imshow(np.where(surface_full_aperture_mask, surface_tilt_mm, np.nan),
+im = ax.imshow(np.where(surface_center_display_mask, surface_tilt_mm, np.nan),
                extent=extent_ap, origin='lower', cmap='coolwarm',
                vmin=vmin_val, vmax=vmax_val)
 fig.colorbar(im, ax=ax, label="Surface Error [mm]", extend="both")
-ax.set_title(f"{D:g} m Aperture: Central {CENTER_BLOCK_SIZE_M:g} m Square Excluded\n"
-             f"RMS: {rms_full_aperture_tilt:.3f} mm (no error threshold)")
+ax.set_title(f"Central {CENTER_BLOCK_SIZE_M:g} m Square Excluded\n"
+             f"RMS within {D:g} m aperture: {rms_full_aperture_tilt:.3f} mm (no error threshold)")
 ax.set_xlabel("x [m]")
 ax.set_ylabel("y [m]")
 ax.set_xlim(-20, 20)
 ax.set_ylim(-20, 20)
 format_aperture_axes(ax)
+fig.tight_layout()
+full_aperture_no_circle_path = save_figure(
+    fig, os.path.join(OUT_DIR, "surface_error_full_aperture_center_mask_no_circle.png"), dpi=150)
 ax.add_patch(plt.Circle((0, 0), D / 2, color='black', fill=False,
                        linestyle='--', linewidth=1.5, alpha=0.7))
-fig.tight_layout()
 full_aperture_out_path = save_figure(
     fig, os.path.join(OUT_DIR, "surface_error_full_aperture_center_mask.png"), dpi=150)
 plt.close(fig)
-print(f"[INFO] 開口内・中心のみマスクした鏡面誤差図: {full_aperture_out_path}")
+print(f"[INFO] 中心のみマスクした鏡面誤差図（円なし）: {full_aperture_no_circle_path}")
+print(f"[INFO] 中心のみマスクした鏡面誤差図（円あり）: {full_aperture_out_path}")
 
 # =========================
 # ★ 低S/Nデータが鏡面に与える影響の定量評価（差分評価）
