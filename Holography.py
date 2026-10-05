@@ -40,6 +40,7 @@ import matplotlib
 matplotlib.use("Agg")  # 画面表示なし（ファイル出力専用）
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from datetime import datetime, timedelta
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
@@ -924,21 +925,18 @@ if ZOOM_SIZE_ARCMIN is not None:
     im_zoom_amp = axes_zoom[0].imshow(
         beam_grid_amp, extent=extent_vals, cmap="viridis", origin='lower', aspect='auto'
     )
-    fig_zoom_all.colorbar(im_zoom_amp, ax=axes_zoom[0], label="Amplitude")
     axes_zoom[0].set_title("Linear Amplitude")
 
     im_zoom_amp_db = axes_zoom[1].imshow(
         beam_grid_db, extent=extent_vals, cmap="inferno", vmin=DB_MIN, vmax=0,
         origin='lower', aspect='auto'
     )
-    fig_zoom_all.colorbar(im_zoom_amp_db, ax=axes_zoom[1], label="Normalized Amplitude [dB]")
     axes_zoom[1].set_title("Amplitude [dB]")
 
     im_zoom_phase = axes_zoom[2].imshow(
         beam_grid_phase_deg, extent=extent_vals, cmap="twilight", vmin=-180, vmax=180,
         origin='lower', aspect='auto'
     )
-    fig_zoom_all.colorbar(im_zoom_phase, ax=axes_zoom[2], label="Phase [deg]")
     axes_zoom[2].set_title("Phase")
 
     for ax_zoom in axes_zoom:
@@ -947,6 +945,15 @@ if ZOOM_SIZE_ARCMIN is not None:
         ax_zoom.set_aspect('equal', adjustable='box')
         ax_zoom.set_xlabel("Az offset [arcmin]")
         ax_zoom.set_ylabel("El offset [arcmin]")
+
+    # 正方形の描画領域に追従するカラーバーを配置し、上下端を揃える。
+    for ax_zoom, im_zoom, colorbar_label in zip(
+        axes_zoom, (im_zoom_amp, im_zoom_amp_db, im_zoom_phase),
+        ("Amplitude", "Normalized Amplitude [dB]", "Phase [deg]"),
+    ):
+        divider = make_axes_locatable(ax_zoom)
+        colorbar_ax = divider.append_axes("right", size="5%", pad=0.10)
+        fig_zoom_all.colorbar(im_zoom, cax=colorbar_ax, label=colorbar_label)
 
     fig_zoom_all.suptitle(
         f"Beam Pattern ({ZOOM_SIZE_ARCMIN:g}' x {ZOOM_SIZE_ARCMIN:g}', All SNR)"
