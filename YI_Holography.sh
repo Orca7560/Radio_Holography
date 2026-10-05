@@ -87,7 +87,7 @@ usage() {
   OBS_CODE                    観測コード（ディレクトリ名。例: I26184Y）
 
 パス関連:
-  --antenna {32,34}           SKD/PRDファイル名の{ANTENNA}部分（既定: 32）
+  --antenna {32,34}           測定アンテナ径 [m]。SKD/PRD選択とホログラフィ解析に使用（既定: 32）
                                -> OBS_CODE/OBS_CODE{ANTENNA}.skd / .prd
   --output-suffix NAME        図の出力先を OBS_CODE/results_NAME に、
                                beamファイル名を beam_NAME.txt / beam_NAME_search.txt
@@ -291,6 +291,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()
+holography_opts+=(--antenna "$ANTENNA")
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
 if [[ "$NO_SLICE" != "true" ]]; then
