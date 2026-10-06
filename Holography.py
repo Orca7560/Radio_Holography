@@ -149,7 +149,8 @@ parser.add_argument(
 )
 parser.add_argument(
     "--antenna", type=int, choices=(32, 34), default=32,
-    help="測定アンテナの直径 [m]（既定: 32）。位相傾斜のフィットは32 mで半径2–14 m、34 mで2–15 m。",
+    help="測定アンテナの直径 [m]（既定: 32）。34 mでは入力Phaseの符号を反転してから解析する。\n"
+         "位相傾斜のフィットは32 mで半径2–14 m、34 mで2–15 m。",
 )
 parser.add_argument(
     "--polar", action="store_true",
@@ -421,6 +422,10 @@ for column in ("Az_Rate_arcmin_s", "El_Rate_arcmin_s"):
     if column in beam.columns:
         beam[column] = pd.to_numeric(beam[column], errors="coerce")
 beam = beam.dropna(subset=["Epoch", "Length", "Amp", "Phase", "SNR", "Az_Offset", "El_Offset"])
+if args.antenna == 34:
+    # ON点も含む入力位相を反転してから複素ビーム・較正基準を構成する。
+    beam["Phase"] = -beam["Phase"]
+    print("[INFO] --antenna 34: 全測定点の入力Phaseを符号反転してから解析します（ON点を含む）。")
 beam["E"] = beam["Amp"] * np.exp(1j * np.deg2rad(beam["Phase"]))
 
 def stationary_cross_levels(df, scan_axis):
