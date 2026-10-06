@@ -15,7 +15,8 @@ autoHolo.sh 固有:
                                2=観測日より2日後、0=同日、-2=2日前
 
 出力・入力（以下は YI_Holography.sh に渡す）:
-  --antenna {32,34}           SKD/PRDに用いるアンテナ（既定: 32）
+  --antenna {32,34}           測定アンテナ径 [m]（既定: 32）。SKD/PRD選択と解析に使用
+                               34ではHolography.pyが入力Phaseを反転して解析
   --output-suffix NAME        results_NAME、beam_NAME.txt 等に保存
 
 相関処理・主走査:
@@ -89,9 +90,21 @@ if [[ ! $OBS_CODE =~ ^[A-Za-z][0-9]{5}[A-Za-z]$ ]]; then
 fi
 
 DAT_DAY_OFFSET=2
+ANTENNA=32
 YI_OPTS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --antenna)
+            if [[ $# -lt 2 ]]; then
+                echo "[ERROR] --antenna には 32 か 34 を指定してください。" >&2
+                exit 1
+            fi
+            if [[ $2 != 32 && $2 != 34 ]]; then
+                echo "[ERROR] --antenna は 32 か 34 を指定してください: $2" >&2
+                exit 1
+            fi
+            ANTENNA=$2
+            shift 2 ;;
         --dat-day-offset)
             if [[ $# -lt 2 || ! $2 =~ ^[+-]?[0-9]+$ ]]; then
                 echo "[ERROR] --dat-day-offset には整数の日数が必要です。" >&2
@@ -103,6 +116,7 @@ while [[ $# -gt 0 ]]; do
         *) YI_OPTS+=("$1"); shift ;;
     esac
 done
+YI_OPTS+=(--antenna "$ANTENNA")
 
 for program in ssh sshpass date; do
     command -v "$program" >/dev/null || { echo "[ERROR] $program が必要です。" >&2; exit 1; }

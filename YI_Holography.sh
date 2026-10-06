@@ -89,6 +89,7 @@ usage() {
 パス関連:
   --antenna {32,34}           測定アンテナ径 [m]。SKD/PRD選択とホログラフィ解析に使用（既定: 32）
                                -> OBS_CODE/OBS_CODE{ANTENNA}.skd / .prd
+                               -> 34ではHolography.pyが入力Phaseを反転して解析
   --output-suffix NAME        図の出力先を OBS_CODE/results_NAME に、
                                beamファイル名を beam_NAME.txt / beam_NAME_search.txt
                                にする（未指定時は results / beam.txt / beam_search.txt）
@@ -157,7 +158,12 @@ shift
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --antenna) ANTENNA="$2"; shift 2 ;;
+        --antenna)
+            if [[ $# -lt 2 ]]; then
+                echo "[ERROR] --antenna には 32 か 34 を指定してください。" >&2
+                exit 1
+            fi
+            ANTENNA="$2"; shift 2 ;;
         --output-suffix) OUTPUT_SUFFIX="$2"; shift 2 ;;
         --cpu) CPU="$2"; shift 2 ;;
         --band-split) BAND_SPLIT="$2"; shift 2 ;;
@@ -303,6 +309,11 @@ fi
 
 echo "OBS_CODE     : $OBS_CODE"
 echo "ANTENNA      : $ANTENNA"
+if [[ "$ANTENNA" == "34" ]]; then
+    echo "INPUT_PHASE  : Holography.pyで符号反転（ON点を含む）"
+else
+    echo "INPUT_PHASE  : 符号変更なし"
+fi
 echo "SCAN_AXIS    : $SCAN_AXIS"
 echo "SKD_FILE     : $SKD_FILE"
 echo "PRD_FILE     : $PRD_FILE"
