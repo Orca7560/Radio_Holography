@@ -13,7 +13,7 @@ group_up_txt_prd.py — fringe/frinZ結果(*.txt)を1つのbeamファイルに�
   --prd FILE        指令位置ファイル(.prd)。未指定時は --input 配下から
                      `*<antenna>.prd` を自動検出する（1つに絞れない場合はエラー）。
   --antenna 32|34    自動検出に使うアンテナ径（既定: 32）。
-  --scan-lag-ms MS   PRD座標に適用する走査遅れ補正[ms]（既定: 20）。
+  --scan-lag-ms MS   PRD座標に適用する走査遅れ補正[ms]（既定: 0）。
                      corr_fringe側で既に補正済みのデータなら 0 を指定する。
   --az-drive-speed   本走査（El一定のラスタ）中のAz駆動速度の絶対値[arcmin/s]
                      （既定: 3）。PRD区間の座標差ではなく、この速度と経過時間
@@ -322,8 +322,8 @@ if __name__ == "__main__":
     parser.add_argument("--antenna", choices=("32", "34"), default="32",
                         help="自動検出時に使うアンテナ径（既定値: 32）。")
     parser.add_argument("--add-delay", action="store_true", help="サマリーファイルにRes-Delayの列を追加します。")
-    parser.add_argument("--scan-lag-ms", type=float, default=20.0, metavar="MS",
-                        help="PRD座標へ適用する走査遅れ[ms]。既定値: 20。corr_fringe側で補正済みなら0を指定。")
+    parser.add_argument("--scan-lag-ms", type=float, default=0.0, metavar="MS",
+                        help="PRD座標へ適用する走査遅れ[ms]。既定値: 0（追加補正なし）。")
     parser.add_argument("--az-drive-speed", type=float, default=3.0, metavar="ARCMIN_S",
                         help="本走査中のAz駆動速度の絶対値[arcmin/s]（既定値: 3）。")
     parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
