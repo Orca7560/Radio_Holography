@@ -48,6 +48,7 @@ OUTPUT_SUFFIX=""
 CPU=""
 BAND_SPLIT=""
 SCAN_HALF="false"
+OFFSET_SCAN_TIME="0.5"
 FORWARD_DIRECTION="increasing"
 SCAN_AXIS="az"
 EL_DRIVE_SPEED=""
@@ -97,6 +98,7 @@ usage() {
 corr_fringe.py 関連:
   --cpu N                     gico3実行時のCPUコア数
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
+  --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON点は10秒）
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
   --forward-direction {increasing,decreasing}
                                従来の片方向ラグ指定用。正逆別推定には影響しない
@@ -167,6 +169,9 @@ while [[ $# -gt 0 ]]; do
         --output-suffix) OUTPUT_SUFFIX="$2"; shift 2 ;;
         --cpu) CPU="$2"; shift 2 ;;
         --band-split) BAND_SPLIT="$2"; shift 2 ;;
+        --offset-scan-time)
+            [[ $# -ge 2 && "$2" != --* ]] || { echo "[ERROR] --offset-scan-time には秒数が必要です。" >&2; exit 1; }
+            OFFSET_SCAN_TIME="$2"; shift 2 ;;
         --scan-half) SCAN_HALF="true"; shift ;;
         --forward-direction) FORWARD_DIRECTION="$2"; shift 2 ;;
         --scan-axis) SCAN_AXIS="$2"; shift 2 ;;
@@ -268,7 +273,7 @@ corr_fringe_corr_opts=()
 [[ -n "$CPU" ]] && corr_fringe_corr_opts+=(--cpu "$CPU")
 
 # corr_fringe.py --only-frinZ（frinZ実行）に共通で渡すオプション
-corr_fringe_common_opts=()
+corr_fringe_common_opts=(--offset-scan-time "$OFFSET_SCAN_TIME")
 [[ -n "$CPU" ]] && corr_fringe_common_opts+=(--cpu "$CPU")
 [[ -n "$BAND_SPLIT" ]] && corr_fringe_common_opts+=(--band-split "$BAND_SPLIT")
 [[ "$SCAN_HALF" == "true" ]] && corr_fringe_common_opts+=(--scan-half)
