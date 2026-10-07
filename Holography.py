@@ -62,8 +62,7 @@ OFFSET_LIMIT_ARCMIN = None
 # PRD由来の補正済み座標をbeam.txtから直接読むため、SKDとの時刻合わせは行わない。
 
 # --- 空間ズレ（分角）補正 ---
-AUTO_SPACE_ALIGN = True
-# AUTO_SPACE_ALIGN = False
+AUTO_SPACE_ALIGN = False  # --center-on-peak 指定時のみ有効
 MANUAL_AZ_OFFSET_ARCMIN = 0.0
 MANUAL_EL_OFFSET_ARCMIN = 0.0
 
@@ -134,6 +133,7 @@ parser = argparse.ArgumentParser(
         "--zoom-size 30 --center-block-size 2.9\n"
         "  python Holography.py --input beam.txt --output output --scan-width 57\n"
         "  python Holography.py --input beam.txt --output output --antenna 34\n"
+        "  python Holography.py --input beam.txt --output output --center-on-peak\n"
         "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n\n"
         "--input と --output は必須です。"
     ),
@@ -151,6 +151,10 @@ parser.add_argument(
     "--antenna", type=int, choices=(32, 34), default=32,
     help="測定アンテナの直径 [m]（既定: 32）。34 mでは入力Phaseの符号を反転してから解析する。\n"
          "位相傾斜のフィットは32 mで半径2–14 m、34 mで2–15 m。",
+)
+parser.add_argument(
+    "--center-on-peak", action="store_true",
+    help="全測定点の最大振幅点を原点に移す（ON点を含む）。既定は入力座標のまま解析・作図する。",
 )
 parser.add_argument(
     "--polar", action="store_true",
@@ -207,6 +211,7 @@ if args.center_block_size <= 0:
 if args.scan_width is not None and args.scan_width <= 0:
     parser.error("--scan-width は正の値にしてください。")
 
+AUTO_SPACE_ALIGN = args.center_on_peak
 GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
 GENERATE_APERTURE_SLICES = args.slice_aperture
