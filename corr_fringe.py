@@ -103,7 +103,7 @@ def parse_skd_schedule(skd_filename, include_positions=False):
     return on_points, offset_scans
 
 
-def infer_scan_direction(scan_start, positions, scan_axis="az"):
+def infer_scan_direction(scan_start, positions, scan_axis="az", offset_scan_time=0.5):
     """Infer the direction on the selected axis for one contiguous raster leg.
 
     A fixed 41-second window can include the next row of a raster scan.  That
@@ -349,8 +349,14 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      scan_lag_ms=0.0, on_points=None, offset_scans=None, band=None,
                      scan_positions=None, forward_direction="increasing",
                      scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None,
-                     scan_axis="az"):
+                     scan_axis="az", offset_scan_time=0.5):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
+    if not math.isfinite(offset_scan_time) or not 0 < offset_scan_time <= scan_time:
+        raise ValueError(f"offsetスキャン積分時間は0より大きく{scan_time}秒以下にしてください。")
+    skip_step = output * offset_scan_time
+    skip_max = scan_time * output - skip_step
+    if round(skip_step / (2 if scan_half else 1)) < 1:
+        raise ValueError("offsetスキャン積分時間が出力の時間分解能より短すぎます。")
     processor_name = "fringe" if processor == "fringe" else "frinZ.py"
     band_label = f" [{band}]" if band else ""
     print(f"--- ステップ2: {processor_name}を実行し、結果を整形・保存します{band_label} ---")
@@ -488,7 +494,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                         
                     elif is_offset:
                         print(f"  [INFO] offsetスキャンとして処理します: {timestamp_for_file}")
-                        length_val = float(corr_step * output)  # 基本となる 50.0
+                        length_val = float(offset_scan_time * output)  # 指定した積分時間
                         
                         if processor == "frinZ" and scan_half:
                             # Optional edge treatment: the first and last
@@ -592,6 +598,7 @@ def main():
         description="gico3とfringe/frinZの処理を実行するスクリプト。",
         epilog=(
             "実行例:\n"
+            "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 1.0\n"
             "  python corr_fringe_v6.py I25231Y --only-corr\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe\n"
             "  python corr_fringe_v6.py I25231Y --only-frinZ-freq --scan-half\n"
@@ -618,6 +625,8 @@ def main():
     parser.add_argument("--band-split", type=int, metavar="DIVISIONS",
                         help="8192-8704MHzを指定した分割数で処理します。512の約数(1, 2, 4, 8...)を指定してください。")
     
+    parser.add_argument("--offset-scan-time", type=float, default=0.5, metavar="SEC",
+                        help="OFF点のスキャン積分時間 [s]（既定: 0.5）。積分区間の時間間隔も同じ値にする。ON点は10秒。")
     parser.add_argument("--cpu", type=int, help="gico3実行時のCPUコア数 (例: --cpu 10)")
     parser.add_argument(
         "--scan-half", action="store_true",
@@ -650,6 +659,10 @@ def main():
         parser.print_help()
         sys.exit(1)
     args = parser.parse_args()
+    if not math.isfinite(args.offset_scan_time) or not 0 < args.offset_scan_time <= scan_time:
+        parser.error(f"--offset-scan-time は0より大きく{scan_time}秒以下にしてください。")
+    if round(args.offset_scan_time * output / (2 if args.scan_half else 1)) < 1:
+        parser.error("--offset-scan-time が出力の時間分解能より短すぎます。")
     obs_code = args.obs_code
     if args.scan_lag_ms != 0 and (
         args.scan_lag_increasing_ms is not None or
@@ -753,7 +766,8 @@ def main():
                     band=band,
                     scan_positions=scan_positions,
                     forward_direction=args.forward_direction,
-                    scan_axis=args.scan_axis
+                    scan_axis=args.scan_axis,
+                    offset_scan_time=args.offset_scan_time
                 )
         else:
             run_fringe_steps(

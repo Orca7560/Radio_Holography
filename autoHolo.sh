@@ -22,6 +22,7 @@ autoHolo.sh 固有:
 相関処理・主走査:
   --cpu N                     gico3 のCPUコア数
   --band-split N              8192–8704 MHz をN分割（512の約数）
+  --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON点は10秒）
   --scan-half                 offset走査の最初と最後の積分長を半分にする
   --scan-axis {az,el}         主走査軸（既定: az、縦走査は el）
   --forward-direction {increasing,decreasing}
