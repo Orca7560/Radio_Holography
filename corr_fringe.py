@@ -363,7 +363,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
     output_dir = f"fringe_results_{band}" if band else "fringe_results"
     
     # 画像の実行履歴に合わせてディレクトリ名を修正している場合は適宜変更してください
-    cor_base_dir = f"./stepcor/{band}" if band else "./stepcor"
+    cor_base_dir = f"./step_cor/{band}" if band else "./step_cor"
     on_points = on_points or []
     offset_scans = offset_scans or []
     scan_positions = scan_positions or []
