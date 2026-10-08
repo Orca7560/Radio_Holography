@@ -24,7 +24,7 @@ import argparse
 output = 1000  # xml ファイルの output 数
 output_ON = 1 # ON の output 数
 corr_step = 0.5 # offset のスキャン時間 (s)
-on_length = 10 # on 点のスキャン時間 (s)
+DEFAULT_ON_LENGTH = 10.0  # XMLのON判定時間とON積分時間 [s]
 skip_step = output * corr_step # fringe実行時のskipの間隔 (floatになる可能性あり)
 scan_time = 41
 skip_max = scan_time * output - skip_step # fringe実行時のskipの最大値
@@ -344,15 +344,33 @@ def run_gico3_steps(step_xml_files, cpu=None):
         run_external_command(gico3_command)
     print("--- ステップ1: gico3の処理が完了しました ---\n")
 
+def xml_scan_duration(scan):
+    """Return the usable XML process duration (length - skip), in seconds."""
+    length_node, skip_node = scan.find('length'), scan.find('skip')
+    if length_node is None or skip_node is None:
+        raise ValueError("XML processにはlengthとskipが必要です。")
+    length, skip = float(length_node.text), float(skip_node.text)
+    if not math.isfinite(length) or not math.isfinite(skip) or skip < 0 or length <= skip:
+        raise ValueError("XML processのlength/skipは有限値で、0 <= skip < lengthが必要です。")
+    return length - skip
+
+
+def is_on_scan(scan, on_length=DEFAULT_ON_LENGTH):
+    """Classify using XML only; neither SKD coordinates nor labels are used."""
+    return math.isclose(xml_scan_duration(scan), on_length, rel_tol=0.0, abs_tol=1e-9)
+
+
 def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      add_quick_opt=False, bandscythe_only=False, scan_half=False,
-                     scan_lag_ms=0.0, on_points=None, offset_scans=None, band=None,
+                     scan_lag_ms=0.0, band=None,
                      scan_positions=None, forward_direction="increasing",
                      scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None,
-                     scan_axis="az", offset_scan_time=0.5):
+                     scan_axis="az", offset_scan_time=0.5, on_length=DEFAULT_ON_LENGTH):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
     if not math.isfinite(offset_scan_time) or not 0 < offset_scan_time <= scan_time:
         raise ValueError(f"offsetスキャン積分時間は0より大きく{scan_time}秒以下にしてください。")
+    if not math.isfinite(on_length) or on_length <= 0 or round(output * on_length) < 1:
+        raise ValueError("ON判定・積分時間は有限の正の秒数で、出力の時間分解能以上にしてください。")
     skip_step = output * offset_scan_time
     skip_max = scan_time * output - skip_step
     if round(skip_step / (2 if scan_half else 1)) < 1:
@@ -364,8 +382,6 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
     
     # 画像の実行履歴に合わせてディレクトリ名を修正している場合は適宜変更してください
     cor_base_dir = f"./step_cor/{band}" if band else "./step_cor"
-    on_points = on_points or []
-    offset_scans = offset_scans or []
     scan_positions = scan_positions or []
     forward_sign = 1 if forward_direction == "increasing" else -1
     if scan_lag_increasing_ms is None and scan_lag_decreasing_ms is None:
@@ -375,13 +391,6 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
         direction_lags = {1: scan_lag_increasing_ms or 0.0,
                           -1: scan_lag_decreasing_ms or 0.0}
     apply_lags = any(lag != 0 for lag in direction_lags.values())
-
-    def is_on_scan(start, label):
-        if any(abs((start - t).total_seconds()) <= 1.0 for t in on_points):
-            return True
-        if any(abs((start - t).total_seconds()) <= 1.0 for t in offset_scans):
-            return False
-        return "ON" in label.upper()
 
     # Validate every direction before overwriting any results or invoking frinZ.
     directions = {}
@@ -394,11 +403,10 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
             raise ValueError("往復を判定するため、Az/El座標を含むSKDファイルが必要です。")
         for xml_file in step_xml_files:
             root = ET.parse(xml_file).getroot()
-            label = root.find('stream').find('label').text.strip()
             for scan in root.findall('process'):
                 start = datetime.strptime(scan.find('epoch').text.strip(), '%Y/%j %H:%M:%S')
-                start += timedelta(seconds=int(scan.find('skip').text))
-                if not is_on_scan(start, label):
+                start += timedelta(seconds=float(scan.find('skip').text))
+                if not is_on_scan(scan, on_length):
                     directions[start] = infer_scan_direction(start, scan_positions, scan_axis)
         for direction, lag in direction_lags.items():
             if lag != 0 and direction not in directions.values():
@@ -464,7 +472,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
 
                 for scan in scans:
                     epoch_str = scan.find('epoch').text.strip()
-                    xml_skip_sec = int(scan.find('skip').text)
+                    xml_skip_sec = float(scan.find('skip').text)
                     label = stream_info.find('label').text.strip()
 
                     base_datetime = datetime.strptime(epoch_str, '%Y/%j %H:%M:%S')
@@ -484,16 +492,16 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                     
                     cor_file = cor_files[0]
                     
-                    is_on_point = is_on_scan(scan_start_datetime, label)
+                    is_on_point = is_on_scan(scan, on_length)
                     is_offset = not is_on_point
                     
                     tasks = []
                     if is_on_point:
-                        print(f"  [INFO] ON点として処理します: {timestamp_for_file}")
+                        print(f"  [INFO] ON点として処理します: {timestamp_for_file} (XML length-skip={xml_scan_duration(scan):g} s)")
                         tasks.append({'length': float(output * on_length), 'skip': 0.0})
                         
                     elif is_offset:
-                        print(f"  [INFO] offsetスキャンとして処理します: {timestamp_for_file}")
+                        print(f"  [INFO] offsetスキャンとして処理します: {timestamp_for_file} (XML length-skip={xml_scan_duration(scan):g} s)")
                         length_val = float(offset_scan_time * output)  # 指定した積分時間
                         
                         if processor == "frinZ" and scan_half:
@@ -598,6 +606,7 @@ def main():
         description="gico3とfringe/frinZの処理を実行するスクリプト。",
         epilog=(
             "実行例:\n"
+            "  python corr_fringe.py I25231Y --only-frinZ --on-length 10 --offset-scan-time 0.5\n"
             "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 1.0\n"
             "  python corr_fringe_v6.py I25231Y --only-corr\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe\n"
@@ -625,8 +634,10 @@ def main():
     parser.add_argument("--band-split", type=int, metavar="DIVISIONS",
                         help="8192-8704MHzを指定した分割数で処理します。512の約数(1, 2, 4, 8...)を指定してください。")
     
+    parser.add_argument("--on-length", type=float, default=DEFAULT_ON_LENGTH, metavar="SEC",
+                        help="XMLのlength-skipがこの秒数ならON点と判定し、同じ秒数で積分する（既定: 10）。それ以外はoffset。")
     parser.add_argument("--offset-scan-time", type=float, default=0.5, metavar="SEC",
-                        help="OFF点のスキャン積分時間 [s]（既定: 0.5）。積分区間の時間間隔も同じ値にする。ON点は10秒。")
+                        help="OFF点のスキャン積分時間 [s]（既定: 0.5）。積分区間の時間間隔も同じ値にする。ON積分時間は--on-length。")
     parser.add_argument("--cpu", type=int, help="gico3実行時のCPUコア数 (例: --cpu 10)")
     parser.add_argument(
         "--scan-half", action="store_true",
@@ -663,6 +674,8 @@ def main():
         parser.error(f"--offset-scan-time は0より大きく{scan_time}秒以下にしてください。")
     if round(args.offset_scan_time * output / (2 if args.scan_half else 1)) < 1:
         parser.error("--offset-scan-time が出力の時間分解能より短すぎます。")
+    if not math.isfinite(args.on_length) or args.on_length <= 0 or round(args.on_length * output) < 1:
+        parser.error("--on-length は有限の正の秒数で、出力の時間分解能以上にしてください。")
     obs_code = args.obs_code
     if args.scan_lag_ms != 0 and (
         args.scan_lag_increasing_ms is not None or
@@ -689,30 +702,24 @@ def main():
         print(f"[ERROR] ディレクトリ '{obs_code}' が見つかりません。")
         sys.exit(1)
 
-    # 1. SKDファイルの読み込みと判定
-    if args.skd:
-        if not os.path.isfile(args.skd):
-            parser.error(f"--skd で指定したファイルが見つかりません: {args.skd}")
-        skd_files = [args.skd]
-    else:
-        skd_files = glob.glob('*.skd')
-    on_points = []
-    offset_scans = []
+    # ON判定はXMLのみ。SKDはラグ補正時の走査方向判定にのみ使用する。
     scan_positions = []
-    
-    if skd_files:
-        skd_file = skd_files[0]
-        print(f"[INFO] SKDファイル '{skd_file}' からON点とoffsetスキャンを判定します。")
-        if len(skd_files) > 1:
-            print(f"  [WARN] 複数のSKDファイルが見つかりました。'{skd_file}' を使用します。")
-        
-        on_points, offset_scans, scan_positions = parse_skd_schedule(skd_file, include_positions=True)
-        print(f"  [INFO] {len(on_points)}個のON点、{len(offset_scans)}個のoffsetスキャンを取得しました。\n")
-    else:
-        print("[WARN] .skdファイルが見つかりません。XMLラベル名による判定で処理を進めます。\n")
-
-    if has_lag and not scan_positions:
-        parser.error("走査方向判定用のSKD座標がありません。ラグを適用できません。")
+    if has_lag:
+        if args.skd:
+            if not os.path.isfile(args.skd):
+                parser.error(f"--skd で指定したファイルが見つかりません: {args.skd}")
+            skd_files = [args.skd]
+        else:
+            skd_files = glob.glob('*.skd')
+        if skd_files:
+            skd_file = skd_files[0]
+            print(f"[INFO] SKD '{skd_file}' を走査方向判定に使用します（ON判定には使用しません）。")
+            if len(skd_files) > 1:
+                print(f"[WARN] 複数のSKDがあります。'{skd_file}' を使用します。")
+            _, _, scan_positions = parse_skd_schedule(skd_file, include_positions=True)
+        if not scan_positions:
+            parser.error("走査方向判定用のSKD座標がありません。ラグを適用できません。")
+    print(f"[INFO] ON判定: XML length-skip = {args.on_length:g} s。その他はoffset。")
 
     # 2. XMLファイルの取得
     all_step_files = glob.glob('*_KL_X_step*.xml')
@@ -761,13 +768,12 @@ def main():
                     scan_lag_ms=args.scan_lag_ms,
                     scan_lag_increasing_ms=args.scan_lag_increasing_ms,
                     scan_lag_decreasing_ms=args.scan_lag_decreasing_ms,
-                    on_points=on_points, 
-                    offset_scans=offset_scans, 
                     band=band,
                     scan_positions=scan_positions,
                     forward_direction=args.forward_direction,
                     scan_axis=args.scan_axis,
-                    offset_scan_time=args.offset_scan_time
+                    offset_scan_time=args.offset_scan_time,
+                    on_length=args.on_length
                 )
         else:
             run_fringe_steps(
@@ -780,11 +786,11 @@ def main():
                 scan_lag_ms=args.scan_lag_ms,
                 scan_lag_increasing_ms=args.scan_lag_increasing_ms,
                 scan_lag_decreasing_ms=args.scan_lag_decreasing_ms,
-                on_points=on_points, 
-                offset_scans=offset_scans,
                 scan_positions=scan_positions,
                 forward_direction=args.forward_direction,
-                scan_axis=args.scan_axis
+                scan_axis=args.scan_axis,
+                offset_scan_time=args.offset_scan_time,
+                on_length=args.on_length
             )
 
     print("--- 全ての処理が完了しました ---")
