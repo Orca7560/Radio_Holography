@@ -197,8 +197,8 @@ parser.add_argument(
     help="較正用ON点の積分時間 [s]（既定: 10）。中心座標かつLengthがこの時間と一致する点をONと判定する。",
 )
 parser.add_argument(
-    "--include-center-crossings", action="store_true",
-    help="位相補正にスキャン中の中心通過点も含める。中心座標かつAmp > 1ならLengthに関係なく採用する（既定: 停止ONのみ）。",
+    "--exclude-center-crossings", dest="include_center_crossings", action="store_false", default=True,
+    help="位相補正から中心通過点を除外し、指定したLengthの停止ONだけを使う。既定は中心座標かつAmp > 1の通過点も含める。",
 )
 parser.add_argument(
     "--on-phase-linear-fit", action="store_true",
@@ -536,7 +536,7 @@ if args.scan_axis == "el" and EVEN_SCAN_EL_OFFSET_ARCMIN != 0.0:
     El_shifted[is_even_scan] += EVEN_SCAN_EL_OFFSET_ARCMIN
 
 # 較正用ONは中心座標かつ指定した積分時間の点。
-# 既定では短いLengthの中心通過点を除外し、オプション指定時に追加する。
+# 既定では中心通過点も含め、--exclude-center-crossings指定時は停止ONのみ。
 on_mask = ((Az == 0) & (El == 0)
            & np.isclose(df["Length"].to_numpy(), args.on_length,
                         rtol=0.0, atol=1e-6))
