@@ -266,8 +266,8 @@ print(f"Antenna: {D:g} m (aperture radius: {D / 2:g} m)")
 print(f"Phase tilt fit: radius {FIT_RADIUS_MIN:g}–{FIT_RADIUS_MAX:g} m")
 print(f"Surface RMS: radius {SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} m, "
       f"excluding central {CENTER_BLOCK_SIZE_M:g} × {CENTER_BLOCK_SIZE_M:g} m square")
-print(f"Full-aperture Surface RMS: radius < {D / 2:g} m, "
-      f"excluding only central {CENTER_BLOCK_SIZE_M:g} × {CENTER_BLOCK_SIZE_M:g} m square")
+print(f"Full-aperture Surface RMS: entire pixels inside radius {D / 2:g} m, "
+      f"excluding boundary pixels and central {CENTER_BLOCK_SIZE_M:g} × {CENTER_BLOCK_SIZE_M:g} m square")
 arcmin_to_rad = np.pi / (180 * 60)
 
 # ==========================================
@@ -1271,14 +1271,20 @@ surface_tilt_mm = (wavelength / (4 * np.pi) * phase_tilt_only) * 1e3
 
 center_block_mask = ((np.abs(X) <= CENTER_BLOCK_SIZE_M / 2) &
                      (np.abs(Y) <= CENTER_BLOCK_SIZE_M / 2))
-# 開口内から中心正方形だけを除外。誤差の閾値・内側の半径制限は適用しない。
-surface_full_aperture_mask = ((R < D / 2) & ~center_block_mask &
+# 画素の最遠の角まで円内にある場合のみ採用する。
+# 円周に接する画素も除外し、画素中心だけが円内の境界画素は採用しない。
+pixel_outer_radius = np.hypot(np.abs(X) + abs(dx) / 2,
+                              np.abs(Y) + abs(dy) / 2)
+aperture_interior_mask = pixel_outer_radius < D / 2
+boundary_pixel_mask = (R < D / 2) & ~aperture_interior_mask
+surface_full_aperture_mask = (aperture_interior_mask & ~center_block_mask &
                               np.isfinite(surface_tilt_mm))
 if not np.any(surface_full_aperture_mask):
     raise ValueError("中心ブロッキングを除いた開口内に有効な鏡面誤差データがありません。")
 rms_full_aperture_tilt = np.sqrt(np.mean(surface_tilt_mm[surface_full_aperture_mask]**2))
 surface_rms_mask = ((R >= SURFACE_RMS_RADIUS_MIN_M) &
                     (R <= SURFACE_RMS_RADIUS_MAX_M) &
+                    aperture_interior_mask &
                     ~center_block_mask &
                     np.isfinite(surface_tilt_mm))
 if not np.any(surface_rms_mask):
@@ -1291,7 +1297,8 @@ rms_after_thresh_tilt = (
 )
 
 print(f"\n--- 鏡面精度評価 (Tilt除去のみ) ---")
-print(f"Surface RMS (直径{D:g} mの開口内、中心{CENTER_BLOCK_SIZE_M:g} m四方のみ除外、"
+print(f"[INFO] 開口円周にかかる画素を除外: {np.count_nonzero(boundary_pixel_mask)}画素")
+print(f"Surface RMS (直径{D:g} mの開口内、円周にかかる画素と中心{CENTER_BLOCK_SIZE_M:g} m四方を除外、"
       f"{np.count_nonzero(surface_full_aperture_mask)}画素): {rms_full_aperture_tilt:.3f} mm")
 print(f"Surface RMS (半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} m、{np.count_nonzero(surface_rms_mask)}画素): {rms_annulus_tilt:.3f} mm")
 print(f"Surface RMS (同じ円環内、|誤差|≤{SURFACE_ERR_THRESHOLD_MM:g} mm): {rms_after_thresh_tilt:.3f} mm")
@@ -1336,7 +1343,8 @@ for ax in axes:
 save_figure(fig, os.path.join(OUT_DIR, "surface_error_tilt_only.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
 
-# 表示は中心ブロッキングのみ除外し、開口外側も残す。RMSは開口内で評価。
+# 表示は中心ブロッキングのみ除外し、開口外側も残す。
+# RMSには画素全体が開口円内にある画素のみを使用する。
 surface_center_display_mask = ~center_block_mask & np.isfinite(surface_tilt_mm)
 fig, ax = plt.subplots(figsize=(8, 7))
 im = ax.imshow(np.where(surface_center_display_mask, surface_tilt_mm, np.nan),
@@ -1521,7 +1529,7 @@ fig, ax = plt.subplots(figsize=(8, 6))
 ax.plot(freq_array / 1e9, eta_array, label=f'Calculated 2–12 m RMS: {rms_annulus_tilt:.3f} mm', color='blue', linewidth=2.5)
 eta_full_aperture = np.exp(- (4 * np.pi * rms_full_aperture_tilt * 1e-3 / wavelength_array)**2)
 ax.plot(freq_array / 1e9, eta_full_aperture,
-        label=f'{D:g} m aperture, central square excluded: {rms_full_aperture_tilt:.3f} mm',
+        label=f'{D:g} m aperture, boundary / central square excluded: {rms_full_aperture_tilt:.3f} mm',
         color='darkorange', linewidth=2.5)
 
 # 比較用リファレンス (0.3mm, 0.7mm, 1.0mm)
@@ -1702,6 +1710,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
