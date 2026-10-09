@@ -42,13 +42,13 @@ import matplotlib.pyplot as plt
 
 # 論文・スライドで縮小しても読みやすい文字サイズを全図へ適用。
 plt.rcParams.update({
-    "font.size": 14,
-    "axes.labelsize": 16,
-    "xtick.labelsize": 14,
-    "ytick.labelsize": 14,
-    "legend.fontsize": 14,
-    "figure.titlesize": 16,
-    "axes.titlesize": 16,
+    "font.size": 20,
+    "axes.labelsize": 20,
+    "xtick.labelsize": 20,
+    "ytick.labelsize": 20,
+    "legend.fontsize": 20,
+    "figure.titlesize": 20,
+    "axes.titlesize": 20,
 })
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -110,7 +110,7 @@ SURFACE_RMS_RADIUS_MIN_M = 2.0
 SURFACE_RMS_RADIUS_MAX_M = 12.0
 
 # 開口面・鏡面のXYマップで共通に使う主目盛り間隔 [m]
-APERTURE_TICK_STEP_M = 5.0
+APERTURE_TICK_STEP_M = 10.0
 
 # 観測コード（ディレクトリ名）
 OBS_CODE = "I26149Y"
@@ -731,7 +731,7 @@ if GENERATE_SLICES:
         axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
         axes[0].set_ylabel("Normalized Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
-        axes[0].legend(fontsize=14)
+        axes[0].legend(fontsize=20)
         axes[0].grid(True, linestyle='--', alpha=0.5)
         axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='purple')
         axes[1].set_xlabel(f"{main_name} offset [arcmin]")
@@ -1097,7 +1097,7 @@ save_figure(fig, os.path.join(OUT_DIR, "aperture_field_zero_filled_no_circle.png
 plt.close(fig)
 
 # 同一の振幅スケールで比較する。各画像を独立に正規化すると差が見えにくい。
-fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
 shared_max = max(np.max(aperture_amp), np.max(raw_amp))
 for ax, amp, title in zip(axes, (aperture_amp, raw_amp),
                           ("Nearest interpolation", "Missing cells = 0")):
@@ -1110,7 +1110,6 @@ for ax, amp, title in zip(axes, (aperture_amp, raw_amp),
     ax.set_ylabel("y [m]")
     format_aperture_axes(ax)
 fig.colorbar(im, ax=axes, label="Amplitude")
-fig.subplots_adjust(left=0.07, right=0.88, bottom=0.12, top=0.90, wspace=0.28)
 save_figure(fig, os.path.join(OUT_DIR, "aperture_interpolation_comparison.png"), dpi=150)
 plt.close(fig)
 print(f"[INFO] IFFT comparison: {np.count_nonzero(valid_cells)}/{valid_cells.size} observed grid cells")
@@ -1561,13 +1560,13 @@ for ref_rms_mm in [0.3, 0.7, 1.0]:
         ref_eta = np.exp(- (4 * np.pi * (ref_rms_mm * 1e-3) / wavelength_array)**2)
         ax.plot(freq_array / 1e9, ref_eta, linestyle='--', label=f'Ref RMS: {ref_rms_mm:.1f} mm')
 
-ax.set_title("Surface Efficiency vs Frequency (Ruze\'s Equation)", fontsize=14)
-ax.set_xlabel("Frequency [GHz]", fontsize=16)
-ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=16)
+ax.set_title("Surface Efficiency vs Frequency (Ruze\'s Equation)", fontsize=20)
+ax.set_xlabel("Frequency [GHz]", fontsize=20)
+ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=20)
 ax.set_xlim(6.5, 12.5)
 ax.set_ylim(0, 1.05)
 ax.grid(True, linestyle=':', alpha=0.7)
-ax.legend(fontsize=14)
+ax.legend(fontsize=20)
 fig.tight_layout()
 
 ruze_out_path = os.path.join(OUT_DIR, "ruze_efficiency.png")
@@ -1676,7 +1675,7 @@ def save_polar_figures(polar_field, r_edges, theta_edges, amplitude_reference,
             ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
             ax.set_title(panel_title, pad=20 if circular else 10)
             fig.colorbar(im, ax=ax, label=label, shrink=0.78, pad=0.1 if circular else 0.03)
-        fig.suptitle(title + '\n0 deg = +x, 90 deg = +y; counterclockwise', fontsize=13)
+        fig.suptitle(title + '\n0 deg = +x, 90 deg = +y; counterclockwise', fontsize=20)
         fig.tight_layout(rect=(0, 0, 1, 0.91))
         kind = 'polar' if circular else 'rtheta'
         path = os.path.join(out_dir, f'aperture_{kind}_{name}.png')
