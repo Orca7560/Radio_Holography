@@ -8,9 +8,10 @@ time lag tau changes each sample coordinate as
 
 By default, one scan direction is held fixed while the other direction's lag
 is varied. This is repeated with the fixed direction reversed; the alignment
-with the smallest amplitude-map mismatch is selected. These are alternative
+with the largest Pearson correlation coefficient of the amplitude maps is selected. These are alternative
 relative alignments, not two independent absolute lags. --bidirectional-lags
-enables the simultaneous two-dimensional search and Airy-based selection.
+enables the simultaneous two-dimensional search using the same criterion.
+The Airy score in that mode is diagnostic only; it does not select the lag.
 
 Usage:
   python scanning_effect.py beam.txt schedule.skd
@@ -236,7 +237,11 @@ def map_on_grid(df: pd.DataFrame, xcol: str, ycol: str, value: np.ndarray, grid_
 
 
 def pair_metrics(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
-    """Mismatch of two direction maps, normalized on their common support."""
+    """Pearson correlation of amplitudes on common useful pixels.
+
+    Peak normalization is used only for the existing 5% signal mask.
+    Mean-subtracted amplitudes determine the coefficient, not phase.
+    """
     valid = np.isfinite(a) & np.isfinite(b)
     if valid.sum() < 20:
         return np.nan, 0
@@ -248,7 +253,13 @@ def pair_metrics(a: np.ndarray, b: np.ndarray) -> tuple[float, int]:
     useful = (a + b) * 0.5 > 0.05
     if useful.sum() < 10:
         return np.nan, 0
-    return float(np.mean((a[useful] - b[useful]) ** 2)), int(useful.sum())
+    a, b = a[useful], b[useful]
+    a, b = a - np.mean(a), b - np.mean(b)
+    norm = np.linalg.norm(a) * np.linalg.norm(b)
+    if not np.isfinite(norm) or norm <= 0:
+        return np.nan, int(useful.sum())
+    correlation = np.dot(a, b) / norm
+    return float(np.clip(correlation, -1.0, 1.0)), int(useful.sum())
 
 
 def airy_main_beam_score(
@@ -257,8 +268,8 @@ def airy_main_beam_score(
 ) -> float:
     """Compare the combined field amplitude with an origin-centred Airy beam.
 
-    The model is used only to choose among maps already matching between
-    directions; its centre is fixed so it can resolve the common translation.
+    This is a diagnostic for the selected bidirectional alignment only.
+    Its origin-centred model does not influence the correlation maximum.
     """
     valid = central_mask & np.isfinite(a) & np.isfinite(b)
     if valid.sum() < 10:
@@ -314,9 +325,9 @@ def search_direction_lags(
         key = (round(float(lag_plus), 8), round(float(lag_minus), 8))
         if key not in records:
             a, b = direction_map(1, key[0]), direction_map(-1, key[1])
-            mismatch, overlap = pair_metrics(a, b)
+            correlation, overlap = pair_metrics(a, b)
             records[key] = dict(lag_increasing_ms=key[0], lag_decreasing_ms=key[1],
-                                mismatch=mismatch, overlap=overlap, airy_mse=np.nan)
+                                correlation=correlation, overlap=overlap, airy_mse=np.nan)
 
     coarse_step = max(20.0, step_ms)
     coarse = np.unique(np.r_[np.arange(-max_lag_ms, max_lag_ms + coarse_step / 2,
@@ -333,35 +344,27 @@ def search_direction_lags(
 
     def valid_records(fixed_direction: int | None = None) -> list[dict[str, float]]:
         valid = [record for record in records.values()
-                 if np.isfinite(record["mismatch"])
+                 if np.isfinite(record["correlation"])
                  and (fixed_direction is None or
                       record["lag_increasing_ms" if fixed_direction > 0 else "lag_decreasing_ms"] == 0)]
         if not valid:
             raise ValueError("no valid increasing/decreasing lag alignment")
-        # Interpolation edges can produce a deceptively small mismatch when
+        # Interpolation edges can produce a deceptively high correlation when
         # little useful sky remains in common.
         max_overlap = max(record["overlap"] for record in valid)
         return [record for record in valid if record["overlap"] >= 0.8 * max_overlap]
 
     def choose() -> tuple[float, float]:
         valid = valid_records()
-        if not bidirectional:
-            best = min(valid, key=lambda record: (record["mismatch"],
-                                                  abs(record["lag_increasing_ms"]) +
-                                                  abs(record["lag_decreasing_ms"])))
-            return best["lag_increasing_ms"], best["lag_decreasing_ms"]
-        best_mismatch = min(record["mismatch"] for record in valid)
-        tolerance = max(0.05 * best_mismatch, 5e-4)
-        candidates = [record for record in valid
-                      if record["mismatch"] <= best_mismatch + tolerance]
-        for record in candidates:
-            a = direction_map(1, record["lag_increasing_ms"])
-            b = direction_map(-1, record["lag_decreasing_ms"])
-            record["airy_mse"] = airy_main_beam_score(a, b, models, central_mask)
-        best = min(candidates, key=lambda record: (
-            record["airy_mse"], record["mismatch"]))
-        if not np.isfinite(best["airy_mse"]):
-            raise ValueError("not enough central beam coverage for Airy comparison")
+        # Maximize Pearson r in both modes. Resolve exact ties by preferring
+        # the smaller total applied lag; the Airy model never overrides r.
+        best = min(valid, key=lambda record: (-record["correlation"],
+                                              abs(record["lag_increasing_ms"]) +
+                                              abs(record["lag_decreasing_ms"])))
+        if bidirectional:
+            best["airy_mse"] = airy_main_beam_score(
+                direction_map(1, best["lag_increasing_ms"]),
+                direction_map(-1, best["lag_decreasing_ms"]), models, central_mask)
         return best["lag_increasing_ms"], best["lag_decreasing_ms"]
 
     if bidirectional:
@@ -376,7 +379,7 @@ def search_direction_lags(
     else:
         for fixed_direction in (1, -1):
             best_on_axis = min(valid_records(fixed_direction),
-                               key=lambda record: record["mismatch"])
+                               key=lambda record: -record["correlation"])
             moving_lag = best_on_axis["lag_decreasing_ms" if fixed_direction > 0
                                       else "lag_increasing_ms"]
             fine = np.arange(max(-max_lag_ms, moving_lag - coarse_step),
@@ -433,7 +436,7 @@ def main() -> int:
     p.add_argument("--model-el-deg", type=float, default=57.3,
                     help="elevation [deg] for the Az projection in the Airy comparison (default: 57.3)")
     p.add_argument("--airy-radius-arcmin", type=float, default=12.0,
-                    help="central radius [arcmin] used only to select among matching lag pairs (default: 12)")
+                    help="central radius [arcmin] for the diagnostic Airy score; not used to select lags (default: 12)")
     if len(sys.argv) == 1:
         p.print_help()
         return 1
@@ -488,14 +491,14 @@ def main() -> int:
     amp1, phase1 = make_maps(joined, "az_corrected_arcmin", "el_corrected_arcmin", grid_x, grid_y)
     extent = [qx.min(), qx.max(), qy.min(), qy.max()]
     fig, ax = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
-    finite = search[np.isfinite(search.mismatch)]
+    finite = search[np.isfinite(search.correlation)]
     axis_name = args.scan_axis.title()
     if args.bidirectional_lags:
         points = ax[0, 0].scatter(finite.lag_increasing_ms, finite.lag_decreasing_ms,
-                                  c=finite.mismatch, s=8, cmap="viridis", rasterized=True)
+                                  c=finite.correlation, s=8, cmap="viridis", rasterized=True)
         ax[0, 0].scatter([lag_plus_ms], [lag_minus_ms], marker="x", color="red",
                          s=100, label="selected")
-        fig.colorbar(points, ax=ax[0, 0], label="Forward/reverse mismatch")
+        fig.colorbar(points, ax=ax[0, 0], label="Amplitude correlation coefficient r")
         ax[0, 0].set(xlabel=f"+{axis_name} lag [ms]", ylabel=f"-{axis_name} lag [ms]",
                      title="Lag-pair search")
     else:
@@ -504,10 +507,10 @@ def main() -> int:
             ("lag_decreasing_ms", "lag_increasing_ms", f"-{axis_name} fixed / +{axis_name} shifted"),
         ):
             curve = finite[np.isclose(finite[fixed], 0)].sort_values(moving_col)
-            ax[0, 0].plot(curve[moving_col], curve.mismatch, label=label)
-        ax[0, 0].scatter([lag_minus_ms or lag_plus_ms], [selected.mismatch],
+            ax[0, 0].plot(curve[moving_col], curve.correlation, label=label)
+        ax[0, 0].scatter([lag_minus_ms or lag_plus_ms], [selected.correlation],
                          marker="x", color="red", s=100, label="selected")
-        ax[0, 0].set(xlabel="Moving direction lag [ms]", ylabel="Forward/reverse mismatch",
+        ax[0, 0].set(xlabel="Moving direction lag [ms]", ylabel="Amplitude correlation coefficient r",
                      title="One-direction lag searches")
     ax[0, 0].legend()
     for axes, image, title, cmap, vmin, vmax in (
@@ -531,6 +534,7 @@ def main() -> int:
     fig.savefig(args.outdir / "scanning_diagnostics.png", dpi=180)
     plt.close(fig)
     print(f"Matched samples: {len(joined)}")
+    print(f"Best amplitude correlation: r={selected.correlation:.6f}, pixels={int(selected.overlap)}")
     print(f"Best +{axis_name} lag: {lag_plus_ms:.1f} ms")
     print(f"Best -{axis_name} lag: {lag_minus_ms:.1f} ms")
     print(f"Typical |{axis_name} correction|: {abs(speed) * max(abs(lag_plus_ms), abs(lag_minus_ms)) / 1000:.5g} arcmin")
