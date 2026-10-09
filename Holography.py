@@ -556,7 +556,7 @@ else:
         raise ValueError("--on-phase-linear-fit には Amp > 1 のON点が2点以上必要です。")
     print(f"[WARN] 位相補正に使えるON点 (Amp > 1) が{len(on_idx)}点のため、補正しません。")
 
-# 全測定点を濃い灰色で表示し、実際に位相補正に使ったONを白抜き三角で重ねる。
+# 全測定点を薄い灰色で表示し、実際に位相補正に使ったONを黒い三角で重ねる。
 # 白黒印刷でも、中心通過点と較正用ONをマーカーの形で区別できる。
 # スキャン中の中心通過点や不採用のONは灰色のままとする。
 time_axis = df["Epoch"].to_numpy()
@@ -564,19 +564,19 @@ amp_values = np.abs(E)
 phase_values = np.rad2deg(np.angle(E))
 plot_on_idx = on_idx if phase_reference is not None else np.array([], dtype=int)
 fig, (ax_amp, ax_phase) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-ax_amp.scatter(time_axis, amp_values, s=3, c="0.3", alpha=0.8,
+ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
                rasterized=True, label="All measurements")
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
-               marker="^", facecolors="white", edgecolors="black", linewidths=1.0,
+               marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
                zorder=3, label="ON used (Amp > 1)")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
 ax_amp.legend(loc="best")
 
-ax_phase.scatter(time_axis, phase_values, s=3, c="0.3", alpha=0.8,
+ax_phase.scatter(time_axis, phase_values, s=3, c="0.65", alpha=0.45,
                  rasterized=True, label="All measurements")
 ax_phase.scatter(time_axis[plot_on_idx], phase_values[plot_on_idx], s=48,
-                 marker="^", facecolors="white", edgecolors="black", linewidths=1.0,
+                 marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
                  zorder=3, label="ON used (Amp > 1)")
 if phase_reference is not None:
     # 全測定点と同じ[-180, 180]表示へ折り返す。±180度の境界では
@@ -584,7 +584,7 @@ if phase_reference is not None:
     reference_deg = np.rad2deg(np.angle(np.exp(1j * phase_reference)))
     reference_deg = reference_deg.copy()
     reference_deg[np.r_[False, np.abs(np.diff(reference_deg)) > 180]] = np.nan
-    ax_phase.plot(time_axis, reference_deg, color="black", linestyle="--", linewidth=1.6,
+    ax_phase.plot(time_axis, reference_deg, color="black", linestyle="-", linewidth=1.6,
                   label=reference_label)
 ax_phase.set_ylim(-180, 180)
 ax_phase.set_ylabel("Raw phase [deg]")
