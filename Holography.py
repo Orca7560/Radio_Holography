@@ -197,6 +197,10 @@ parser.add_argument(
     help="較正用ON点の積分時間 [s]（既定: 10）。中心座標かつLengthがこの時間と一致する点をONと判定する。",
 )
 parser.add_argument(
+    "--include-center-crossings", action="store_true",
+    help="位相補正にスキャン中の中心通過点も含める。中心座標かつAmp > 1ならLengthに関係なく採用する（既定: 停止ONのみ）。",
+)
+parser.add_argument(
     "--on-phase-linear-fit", action="store_true",
     help="Amp > 1 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
          "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
@@ -532,13 +536,21 @@ if args.scan_axis == "el" and EVEN_SCAN_EL_OFFSET_ARCMIN != 0.0:
     El_shifted[is_even_scan] += EVEN_SCAN_EL_OFFSET_ARCMIN
 
 # 較正用ONは中心座標かつ指定した積分時間の点。
-# スキャン中の中心通過点はLengthが短いため、振幅にかかわらず除外する。
+# 既定では短いLengthの中心通過点を除外し、オプション指定時に追加する。
 on_mask = ((Az == 0) & (El == 0)
            & np.isclose(df["Length"].to_numpy(), args.on_length,
                         rtol=0.0, atol=1e-6))
+stationary_on_mask = on_mask.copy()
+if args.include_center_crossings:
+    on_mask = (Az == 0) & (El == 0)
 on_idx = np.flatnonzero(on_mask & (np.abs(E) > 1.0))
 print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
-      f"{np.count_nonzero(on_mask)}点、Amp > 1 の採用候補 {len(on_idx)}点")
+      f"{np.count_nonzero(stationary_on_mask)}点、Amp > 1 の停止ON候補 "
+      f"{np.count_nonzero(stationary_on_mask & (np.abs(E) > 1.0))}点")
+if args.include_center_crossings:
+    print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
+          f"{np.count_nonzero(on_mask & ~stationary_on_mask & (np.abs(E) > 1.0))}点、"
+          f"合計 {len(on_idx)}点")
 E_corr = E.copy()
 
 phase_reference = None
@@ -564,7 +576,7 @@ else:
 
 # 全測定点を薄い灰色で表示し、実際に位相補正に使ったONを黒い三角で重ねる。
 # 白黒印刷でも、中心通過点と較正用ONをマーカーの形で区別できる。
-# スキャン中の中心通過点や不採用のONは灰色のままとする。
+# 補正に採用しなかった中心通過点やONは灰色のままとする。
 time_axis = df["Epoch"].to_numpy()
 amp_values = np.abs(E)
 phase_values = np.rad2deg(np.angle(E))
@@ -1710,6 +1722,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 

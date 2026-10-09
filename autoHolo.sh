@@ -22,6 +22,7 @@ autoHolo.sh 固有:
 相関処理・主走査:
   --cpu N                     gico3 のCPUコア数
   --band-split N              8192–8704 MHz をN分割（512の約数）
+  --include-center-crossings   位相補正に中心通過点も含める（中心座標かつAmp > 1）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
   --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON積分時間は--on-length）
   --scan-half                 offset走査の最初と最後の積分長を半分にする
