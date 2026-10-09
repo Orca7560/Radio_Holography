@@ -507,7 +507,7 @@ if EVEN_SCAN_AZ_OFFSET_ARCMIN != 0.0:
 if args.scan_axis == "el" and EVEN_SCAN_EL_OFFSET_ARCMIN != 0.0:
     El_shifted[is_even_scan] += EVEN_SCAN_EL_OFFSET_ARCMIN
 
-# ONの全測定点を診断図には表示し、Amp > 1 のONだけを補正に使う。
+# 座標が中心にあり、Amp > 1 のONだけを補正に使う。
 on_mask = (Az == 0) & (El == 0)
 on_idx = np.flatnonzero(on_mask & (np.abs(E) > 1.0))
 E_corr = E.copy()
@@ -533,33 +533,26 @@ else:
         raise ValueError("--on-phase-linear-fit には Amp > 1 のON点が2点以上必要です。")
     print(f"[WARN] 位相補正に使えるON点 (Amp > 1) が{len(on_idx)}点のため、補正しません。")
 
-# 補正に使う前の全測定点を表示。ONの不採用点も見えるようにする。
+# 全測定点を灰色で表示し、実際に位相補正に使ったONだけを赤く重ねる。
+# スキャン中の中心通過点や不採用のONは灰色のままとする。
 time_axis = df["Epoch"].to_numpy()
 amp_values = np.abs(E)
 phase_values = np.rad2deg(np.angle(E))
-on_excluded = on_mask & (amp_values <= 1.0)
+plot_on_idx = on_idx if phase_reference is not None else np.array([], dtype=int)
 fig, (ax_amp, ax_phase) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
                rasterized=True, label="All measurements")
-ax_amp.scatter(time_axis[on_idx], amp_values[on_idx], s=22, c="red",
+ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=22, c="red",
                zorder=3, label="ON used (Amp > 1)")
-if np.any(on_excluded):
-    ax_amp.scatter(time_axis[on_excluded], amp_values[on_excluded],
-                   s=26, facecolors="none", edgecolors="red", linewidths=0.8,
-                   zorder=3, label="ON excluded (Amp <= 1)")
-ax_amp.axhline(1.0, color="red", linestyle=":", linewidth=0.9, label="Amp = 1")
+ax_amp.axhline(1.0, color="0.4", linestyle=":", linewidth=0.9, label="Amp = 1")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
 ax_amp.legend(loc="best")
 
 ax_phase.scatter(time_axis, phase_values, s=3, c="0.65", alpha=0.45,
                  rasterized=True, label="All measurements")
-ax_phase.scatter(time_axis[on_idx], phase_values[on_idx], s=22, c="red",
+ax_phase.scatter(time_axis[plot_on_idx], phase_values[plot_on_idx], s=22, c="red",
                  zorder=3, label="ON used (Amp > 1)")
-if np.any(on_excluded):
-    ax_phase.scatter(time_axis[on_excluded], phase_values[on_excluded],
-                     s=26, facecolors="none", edgecolors="red", linewidths=0.8,
-                     zorder=3, label="ON excluded (Amp <= 1)")
 if phase_reference is not None:
     # 全測定点と同じ[-180, 180]表示へ折り返す。±180度の境界では
     # 線を切り、図に存在しない斜めのジャンプを描かない。
@@ -1678,3 +1671,4 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
