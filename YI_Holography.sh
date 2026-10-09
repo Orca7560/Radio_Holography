@@ -99,7 +99,7 @@ usage() {
 corr_fringe.py 関連:
   --cpu N                     gico3実行時のCPUコア数
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
-  --on-length SEC             XML length-skipによるON判定時間・ON積分時間 [s]（既定: 10）
+  --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
   --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON積分時間は--on-length）
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
   --forward-direction {increasing,decreasing}
@@ -308,6 +308,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()
 holography_opts+=(--antenna "$ANTENNA")
+holography_opts+=(--on-length "$ON_LENGTH")
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
 if [[ "$NO_SLICE" != "true" ]]; then

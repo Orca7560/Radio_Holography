@@ -192,6 +192,10 @@ parser.add_argument(
     help="ビーム作成に使うAz/Elオフセットの半幅 [arcmin]。例: 57 はAz・Elとも±57′だけを使用する。",
 )
 parser.add_argument(
+    "--on-length", type=float, default=10.0, metavar="SEC",
+    help="較正用ON点の積分時間 [s]（既定: 10）。中心座標かつLengthがこの時間と一致する点をONと判定する。",
+)
+parser.add_argument(
     "--on-phase-linear-fit", action="store_true",
     help="Amp > 1 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
          "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
@@ -202,6 +206,8 @@ if len(sys.argv) == 1:
 
 args = parser.parse_args()
 
+if not np.isfinite(args.on_length) or args.on_length <= 0:
+    parser.error("--on-length は有限の正の値にしてください。")
 if args.db_min >= 0:
     parser.error("--db-min は 0 未満にしてください。")
 if args.zoom_size <= 0:
@@ -507,9 +513,14 @@ if EVEN_SCAN_AZ_OFFSET_ARCMIN != 0.0:
 if args.scan_axis == "el" and EVEN_SCAN_EL_OFFSET_ARCMIN != 0.0:
     El_shifted[is_even_scan] += EVEN_SCAN_EL_OFFSET_ARCMIN
 
-# 座標が中心にあり、Amp > 1 のONだけを補正に使う。
-on_mask = (Az == 0) & (El == 0)
+# 較正用ONは中心座標かつ指定した積分時間の点。
+# スキャン中の中心通過点はLengthが短いため、振幅にかかわらず除外する。
+on_mask = ((Az == 0) & (El == 0)
+           & np.isclose(df["Length"].to_numpy(), args.on_length,
+                        rtol=0.0, atol=1e-6))
 on_idx = np.flatnonzero(on_mask & (np.abs(E) > 1.0))
+print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
+      f"{np.count_nonzero(on_mask)}点、Amp > 1 の採用候補 {len(on_idx)}点")
 E_corr = E.copy()
 
 phase_reference = None
@@ -1671,4 +1682,5 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
