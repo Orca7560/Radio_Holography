@@ -39,6 +39,17 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  # 画面表示なし（ファイル出力専用）
 import matplotlib.pyplot as plt
+
+# 論文・スライドで縮小しても読みやすい文字サイズを全図へ適用。
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+    "legend.fontsize": 14,
+    "figure.titlesize": 16,
+    "axes.titlesize": 16,
+})
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from datetime import datetime, timedelta
@@ -720,7 +731,7 @@ if GENERATE_SLICES:
         axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
         axes[0].set_ylabel("Normalized Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
-        axes[0].legend(fontsize=8)
+        axes[0].legend(fontsize=14)
         axes[0].grid(True, linestyle='--', alpha=0.5)
         axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='purple')
         axes[1].set_xlabel(f"{main_name} offset [arcmin]")
@@ -1551,12 +1562,12 @@ for ref_rms_mm in [0.3, 0.7, 1.0]:
         ax.plot(freq_array / 1e9, ref_eta, linestyle='--', label=f'Ref RMS: {ref_rms_mm:.1f} mm')
 
 ax.set_title("Surface Efficiency vs Frequency (Ruze\'s Equation)", fontsize=14)
-ax.set_xlabel("Frequency [GHz]", fontsize=12)
-ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=12)
+ax.set_xlabel("Frequency [GHz]", fontsize=16)
+ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=16)
 ax.set_xlim(6.5, 12.5)
 ax.set_ylim(0, 1.05)
 ax.grid(True, linestyle=':', alpha=0.7)
-ax.legend(fontsize=11)
+ax.legend(fontsize=14)
 fig.tight_layout()
 
 ruze_out_path = os.path.join(OUT_DIR, "ruze_efficiency.png")
