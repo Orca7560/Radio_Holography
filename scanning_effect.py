@@ -48,6 +48,10 @@ Outputs (written under --outdir, default "scanning_result/"):
 from __future__ import annotations
 
 import argparse
+import errno
+import io
+import os
+import tempfile
 import re
 import sys
 import time
@@ -448,6 +452,33 @@ def make_maps(df: pd.DataFrame, xcol: str, ycol: str, grid_x: np.ndarray, grid_y
     return amp, np.rad2deg(np.angle(real + 1j * imag))
 
 
+def save_diagnostic_figure(fig, path: Path, **kwargs) -> Path:
+    """Render in memory, then replace the target without opening it for writing.
+
+    Windows viewers may lock an existing PNG on a WSL-mounted drive. If
+    replacement fails for a lock/access error, retain the unique new PNG
+    beside it and report its actual path.
+    """
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", **kwargs)
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=path.parent, prefix=path.stem + "_new_", suffix=".png",
+        delete=False,
+    ) as temporary:
+        temporary.write(buffer.getvalue())
+        new_path = Path(temporary.name)
+    try:
+        os.replace(new_path, path)
+    except OSError as exc:
+        if exc.errno in (errno.EINVAL, errno.EACCES, errno.EPERM, errno.EBUSY):
+            print(f"[WARN] Could not replace {path}: {exc}. "
+                  f"New diagnostic saved to {new_path}", file=sys.stderr)
+            return new_path
+        new_path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -599,7 +630,8 @@ def main() -> int:
         f"Median |{axis_name} rate|: {speed:.4g} arcmin/s\n"
         + (f"Airy score: {selected.airy_mse:.5g}" if args.bidirectional_lags
            else f"Fixed: {'+' if lag_plus_ms == 0 else '-'}{axis_name}"), fontsize=13)
-    fig.savefig(args.outdir / "scanning_diagnostics.png", dpi=180)
+    diagnostic_path = save_diagnostic_figure(
+        fig, args.outdir / "scanning_diagnostics.png", dpi=180)
     plt.close(fig)
     print(f"Matched samples: {len(joined)}")
     print(f"Best amplitude correlation: r={selected.correlation:.6f}, pixels={int(selected.overlap)}")
@@ -607,6 +639,7 @@ def main() -> int:
     print(f"Best -{axis_name} lag: {lag_minus_ms:.1f} ms")
     print(f"Typical |{axis_name} correction|: {abs(speed) * max(abs(lag_plus_ms), abs(lag_minus_ms)) / 1000:.5g} arcmin")
     print(f"Corrected beam: {corrected_beam_path}")
+    print(f"Diagnostic figure: {diagnostic_path}")
     print(f"Outputs: {args.outdir}")
     return 0
 
