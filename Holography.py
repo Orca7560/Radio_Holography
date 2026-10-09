@@ -311,6 +311,12 @@ def save_figure_file(fig, path, image_format, **kwargs):
 
 def save_figure(fig, path, **kwargs):
     """PNGとPDFを保存する。PDF内にも元の相対フォルダ構成を保つ。"""
+    # 図の説明はキャプションで行うため、全パネルのタイトルを保存前に除去。
+    for ax in fig.axes:
+        for loc in ("left", "center", "right"):
+            ax.set_title("", loc=loc)
+    if fig._suptitle is not None:
+        fig._suptitle.set_text("")
     path = os.path.abspath(os.fspath(path))
     relative_path = os.path.relpath(path, os.path.abspath(OUT_DIR))
     pdf_path = os.path.join(OUT_DIR, "pdf", os.path.splitext(relative_path)[0] + ".pdf")
@@ -571,7 +577,7 @@ ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                zorder=3, label="ON used (Amp > 1)")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
-ax_amp.legend(loc="best")
+
 
 ax_phase.scatter(time_axis, phase_values, s=3, c="0.65", alpha=0.45,
                  rasterized=True, label="All measurements")
@@ -590,7 +596,7 @@ ax_phase.set_ylim(-180, 180)
 ax_phase.set_ylabel("Raw phase [deg]")
 ax_phase.set_xlabel("Time")
 ax_phase.grid(True, alpha=0.25)
-ax_phase.legend(loc="best")
+
 fig.autofmt_xdate()
 fig.tight_layout()
 diagnostic_path = save_figure(
