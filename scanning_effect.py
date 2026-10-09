@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Estimate and correct scan-lag offsets in raster beam measurements.
 
-The input correlation summary and SKD file are joined by timestamp.  A trial
+Use either an SKD trajectory or beam.txt offsets with a supplied scan speed.
+In SKD mode the summary and schedule are joined by timestamp. A trial
 time lag tau changes each sample coordinate as
 
     theta_corrected = theta_commanded - velocity * tau.
@@ -15,6 +16,8 @@ The Airy score in that mode is diagnostic only; it does not select the lag.
 
 Usage:
   python scanning_effect.py beam.txt schedule.skd
+  python scanning_effect.py beam.txt --skd schedule.skd
+  python scanning_effect.py beam.txt --scan-speed 3 --scan-axis el
   python scanning_effect.py beam.txt schedule.skd --outdir I26184Y/scanning_result
   python scanning_effect.py beam.txt schedule.skd --max-lag-ms 500 --lag-step-ms 2 \
       --min-snr 5
@@ -24,7 +27,8 @@ Inputs:
                 least the columns Epoch, Amp, Phase, SNR (e.g. beam.txt
                 produced by group_up_txt_prd.py). Epoch must parse as
                 "%Y/%j %H:%M:%S.%f".
-  schedule      A .skd file containing a $SKED block with per-scan
+  schedule      Optional in --scan-speed mode; otherwise a .skd file
+                containing a $SKED block with per-scan
                 Az/El offsets in arcmin (used only to reconstruct the
                 commanded trajectory; the fitted lag is independent of the
                 --prd based pointing already in beam.txt, if any).
@@ -33,7 +37,7 @@ Outputs (written under --outdir, default "scanning_result/"):
   <measurements stem>_hosei<suffix>  Copy with each scanning direction's
                                        Epoch shifted by its selected lag.
   matched_and_corrected.csv          Row-classified, lag-corrected samples.
-  lag_search.csv                     Lag candidates and amplitude-map scores.
+  lag_search.csv                     Lag candidates and amplitude correlations.
   best_lags.csv                      Selected increasing/decreasing lag pair.
   scan_rows.csv                      One row per detected scan leg
                                       (direction, az/el rate, sample count).
@@ -228,6 +232,48 @@ def make_rows(df: pd.DataFrame, gap_s: float, rate_floor: float = 1e-5,
     return df, rows
 
 
+def rows_with_fixed_speed(
+    measurements: pd.DataFrame, speed: float, gap_s: float, scan_axis: str,
+) -> tuple[pd.DataFrame, list[ScanRow]]:
+    """Use beam offsets and only the direction signs, never SKD or rate magnitude."""
+    df = measurements.copy().reset_index(drop=True)
+    for source, target in (("Az_Offset", "az_arcmin"), ("El_Offset", "el_arcmin")):
+        if source not in df:
+            raise ValueError("--scan-speed requires Az_Offset and El_Offset in beam.txt")
+        df[target] = pd.to_numeric(df[source], errors="coerce")
+    if not np.isfinite(df[["az_arcmin", "el_arcmin"]].to_numpy()).all():
+        raise ValueError("beam.txt offsets must be finite in --scan-speed mode")
+    primary_col = "Az_Rate_arcmin_s" if scan_axis == "az" else "El_Rate_arcmin_s"
+    cross_col = "El_Rate_arcmin_s" if scan_axis == "az" else "Az_Rate_arcmin_s"
+    if primary_col in df:
+        primary = pd.to_numeric(df[primary_col], errors="coerce").to_numpy()
+        cross = (pd.to_numeric(df[cross_col], errors="coerce").to_numpy()
+                 if cross_col in df else np.zeros(len(df)))
+        if not np.isfinite(primary).all() or not np.isfinite(cross).all():
+            raise ValueError("beam.txt rate columns must be finite for direction classification")
+        direction = np.where((np.abs(primary) > 1e-5) & (np.abs(cross) < 0.2),
+                             np.sign(primary), 0).astype(int)
+        dt = np.diff(df.time.astype("int64").to_numpy() / 1e9)
+        new = np.r_[True, (dt > gap_s) | (direction[1:] != direction[:-1])]
+        df["row_id"] = np.cumsum(new) - 1
+        rows = []
+        for rid, group in df.groupby("row_id"):
+            indices = group.index.to_numpy()
+            d = int(direction[indices[0]])
+            rows.append(ScanRow(int(rid), indices,
+                                d * speed if scan_axis == "az" else 0.0,
+                                d * speed if scan_axis == "el" else 0.0, d))
+        print("Direction: signs of beam.txt rate columns; zero/cross-axis rates excluded")
+    else:
+        df, inferred = make_rows(df, gap_s, scan_axis=scan_axis)
+        rows = [ScanRow(r.row_id, r.indices,
+                        r.direction * speed if scan_axis == "az" else 0.0,
+                        r.direction * speed if scan_axis == "el" else 0.0,
+                        r.direction) for r in inferred]
+        print("Direction: inferred from beam.txt offset changes")
+    return df, rows
+
+
 def map_on_grid(df: pd.DataFrame, xcol: str, ycol: str, value: np.ndarray, grid_x: np.ndarray, grid_y: np.ndarray) -> np.ndarray:
     points = df[[xcol, ycol]].to_numpy()
     valid = np.isfinite(points).all(axis=1) & np.isfinite(value)
@@ -410,7 +456,14 @@ def main() -> int:
     p.add_argument("measurements", type=Path,
                     help="correlation summary text with columns Epoch, Amp, Phase, SNR "
                          "(e.g. beam.txt from group_up_txt_prd.py)")
-    p.add_argument("schedule", type=Path, help="SKD schedule file containing a $SKED block")
+    p.add_argument("schedule", type=Path, nargs="?",
+                   help="SKD schedule file (legacy positional form; alternatively --skd)")
+    p.add_argument("--skd", type=Path,
+                   help="SKD trajectory: estimate speeds from coordinates and timestamps")
+    p.add_argument("--scan-speed", "--scan-speed-arcmin-s", type=float, metavar="ARCMIN/S",
+                   help="positive speed along --scan-axis in offset-coordinate arcmin/s; "
+                        "use beam.txt Az_Offset/El_Offset without SKD. Rate-column signs "
+                        "identify directions when present; otherwise infer from offsets.")
     p.add_argument("--outdir", type=Path, default=Path("scanning_result"),
                     help="directory for all output files (default: scanning_result/)")
     p.add_argument("--match-tolerance", type=float, default=0.006,
@@ -441,6 +494,13 @@ def main() -> int:
         p.print_help()
         return 1
     args = p.parse_args()
+    if args.schedule is not None and args.skd is not None:
+        p.error("specify the SKD only once: positional schedule or --skd")
+    schedule = args.skd if args.skd is not None else args.schedule
+    if (schedule is None) == (args.scan_speed is None):
+        p.error("choose exactly one mode: SKD schedule or --scan-speed")
+    if args.scan_speed is not None and (not np.isfinite(args.scan_speed) or args.scan_speed <= 0):
+        p.error("--scan-speed must be a finite positive number in arcmin/s")
     if args.max_lag_ms <= 0 or args.lag_step_ms <= 0 or args.grid_size < 5:
         p.error("--max-lag-ms and --lag-step-ms must be positive; --grid-size must be at least 5")
     if not (0 <= args.model_el_deg < 90) or args.airy_radius_arcmin <= 0:
@@ -448,14 +508,22 @@ def main() -> int:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     print("[1/4] Reading and matching input data...", file=sys.stderr, flush=True)
-    joined = join_by_time(parse_measurements(args.measurements), parse_skd(args.schedule), args.match_tolerance)
-    joined, rows = make_rows(joined, args.row_gap, scan_axis=args.scan_axis)
+    measurements = parse_measurements(args.measurements)
+    if schedule is not None:
+        print(f"Trajectory: SKD {schedule}; speed estimated per scan row")
+        joined = join_by_time(measurements, parse_skd(schedule), args.match_tolerance)
+        joined, rows = make_rows(joined, args.row_gap, scan_axis=args.scan_axis)
+    else:
+        print(f"Trajectory: beam.txt offsets; specified {args.scan_axis.upper()} speed "
+              f"{args.scan_speed:g} arcmin/s (offset-coordinate speed)")
+        joined, rows = rows_with_fixed_speed(
+            measurements, args.scan_speed, args.row_gap, args.scan_axis)
     if not rows:
         raise ValueError("could not identify scan rows; check timestamps and --row-gap")
     rate = {r.row_id: (r.az_rate, r.el_rate, r.direction) for r in rows}
-    joined["az_rate_arcmin_s"] = joined.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[0])
-    joined["el_rate_arcmin_s"] = joined.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[1])
-    joined["direction"] = joined.row_id.map(lambda k: rate.get(k, (np.nan, np.nan, 0))[2])
+    joined["az_rate_arcmin_s"] = joined.row_id.map(lambda k: rate.get(k, (0.0, 0.0, 0))[0])
+    joined["el_rate_arcmin_s"] = joined.row_id.map(lambda k: rate.get(k, (0.0, 0.0, 0))[1])
+    joined["direction"] = joined.row_id.map(lambda k: rate.get(k, (0.0, 0.0, 0))[2])
 
     qx = np.linspace(joined.az_arcmin.quantile(0.01), joined.az_arcmin.quantile(0.99), args.grid_size)
     qy = np.linspace(joined.el_arcmin.quantile(0.01), joined.el_arcmin.quantile(0.99), args.grid_size)
