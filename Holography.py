@@ -135,7 +135,8 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input beam.txt --output output --antenna 34\n"
         "  python Holography.py --input beam.txt --output output --center-on-peak\n"
         "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n\n"
-        "--input と --output は必須です。"
+        "--input と --output は必須です。\n"
+        "各図をPNGとPDFで保存します。PDFはoutput/pdf/以下にまとめます。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
 )
@@ -272,15 +273,16 @@ arcmin_to_rad = np.pi / (180 * 60)
 # ==========================================
 # 共通関数定義
 # ==========================================
-def save_figure(fig, path, **kwargs):
-    """新規PNGを保存してから置換し、置換不可なら別名の完成画像を残す。"""
+def save_figure_file(fig, path, image_format, **kwargs):
+    """新規画像を保存してから置換し、置換不可なら別名の完成画像を残す。"""
     path = os.path.abspath(os.fspath(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with BytesIO() as buffer:
-        fig.savefig(buffer, format="png", **kwargs)
+        fig.savefig(buffer, format=image_format, **kwargs)
         # 既存ファイルを直接開かない。作成したファイルと保存先は同じフォルダ。
         stem = os.path.splitext(os.path.basename(path))[0]
         with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=stem + "_", suffix=".png",
+            mode="wb", prefix=stem + "_", suffix="." + image_format,
             dir=os.path.dirname(path), delete=False,
         ) as output:
             new_path = output.name
@@ -295,16 +297,26 @@ def save_figure(fig, path, **kwargs):
     try:
         os.replace(new_path, path)
     except OSError as exc:
-        # Windows側のロックなどで置換できなくても、完成したPNGは保存済み。
+        # Windows側のロックなどで置換できなくても、完成した画像は保存済み。
         # 原因は断定せず、失敗した操作と実際の保存先を表示する。
         if exc.errno in (errno.EINVAL, errno.EACCES, errno.EPERM, errno.EBUSY):
             print(f"[WARN] 既定名への置換に失敗しました: {path} ({exc})")
             print(f"[SAVED] 別名で保存しました: {new_path}")
             return new_path
         # 容量不足など、想定外のエラーは握りつぶさない。
-        print(f"[ERROR] 置換に失敗しました。生成済みPNG: {new_path}")
+        print(f"[ERROR] 置換に失敗しました。生成済み画像: {new_path}")
         raise
     return path
+
+
+def save_figure(fig, path, **kwargs):
+    """PNGとPDFを保存する。PDF内にも元の相対フォルダ構成を保つ。"""
+    path = os.path.abspath(os.fspath(path))
+    relative_path = os.path.relpath(path, os.path.abspath(OUT_DIR))
+    pdf_path = os.path.join(OUT_DIR, "pdf", os.path.splitext(relative_path)[0] + ".pdf")
+    png_path = save_figure_file(fig, path, "png", **kwargs)
+    save_figure_file(fig, pdf_path, "pdf", **kwargs)
+    return png_path
 
 
 def format_aperture_axes(ax):
@@ -557,7 +569,6 @@ ax_amp.scatter(time_axis, amp_values, s=3, c="0.3", alpha=0.8,
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                marker="^", facecolors="white", edgecolors="black", linewidths=1.0,
                zorder=3, label="ON used (Amp > 1)")
-ax_amp.axhline(1.0, color="0.4", linestyle=":", linewidth=0.9, label="Amp = 1")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
 ax_amp.legend(loc="best")
