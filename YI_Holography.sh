@@ -71,6 +71,7 @@ SCAN_BAND=""          # --band-split 使用時に走査lag推定へ使う帯域�
 
 # Holography.py 用（スライス出力は既定で両方ON。--no-sliceで両方OFF）
 POLAR="false"
+EXCLUDE_CENTER_CROSSINGS="false"
 NO_SLICE="false"
 DB_MIN=""
 ZOOM_SIZE=""
@@ -99,6 +100,7 @@ usage() {
 corr_fringe.py 関連:
   --cpu N                     gico3実行時のCPUコア数
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
+  --exclude-center-crossings   位相補正から中心通過点を除外（既定: 通過点も含む）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
   --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON積分時間は--on-length）
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
@@ -194,6 +196,7 @@ while [[ $# -gt 0 ]]; do
         --bidirectional-lags) BIDIRECTIONAL_LAGS="true"; shift ;;
         --scan-band) SCAN_BAND="$2"; shift 2 ;;
         --invert-lag-sign) INVERT_LAG_SIGN="true"; shift ;;
+        --exclude-center-crossings) EXCLUDE_CENTER_CROSSINGS="true"; shift ;;
         --polar) POLAR="true"; shift ;;
         --no-slice) NO_SLICE="true"; shift ;;
         --db-min) DB_MIN="$2"; shift 2 ;;
@@ -309,6 +312,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 holography_opts=()
 holography_opts+=(--antenna "$ANTENNA")
 holography_opts+=(--on-length "$ON_LENGTH")
+[[ "$EXCLUDE_CENTER_CROSSINGS" == "true" ]] && holography_opts+=(--exclude-center-crossings)
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
 if [[ "$NO_SLICE" != "true" ]]; then
