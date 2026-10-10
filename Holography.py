@@ -763,27 +763,27 @@ if GENERATE_SLICES:
         axes[0].plot(Az_el0, Amp_el0_db, 'k.', alpha=0.3, label="All Data")
         if np.any(valid_idx):
             Az_fit = Az_el0[valid_idx]
-            axes[0].plot(Az_fit, Amp_el0_db[valid_idx], 'ro', markersize=4, label="Fit Range")
+            axes[0].plot(Az_fit, Amp_el0_db[valid_idx], 'ko', markersize=4, label="Fit Range")
             x_fit = np.linspace(Az_fit.min(), Az_fit.max(), 300)
             if fit_res.get('gauss'):
                 g_y = gaussian(x_fit, *fit_res['gauss']['popt'])
                 with np.errstate(divide='ignore', invalid='ignore'):
                     g_y_db = 20 * np.log10(g_y / peak_amp)
-                axes[0].plot(x_fit, g_y_db, 'r--', lw=2,
+                axes[0].plot(x_fit, g_y_db, 'k--', lw=2,
                              label=f"Gauss FWHM: {fit_res['gauss']['fwhm']:.2f}'")
             if fit_res.get('poly'):
                 q_y = fit_res['poly']['poly1d'](x_fit)
                 with np.errstate(divide='ignore', invalid='ignore'):
                     q_y_db = 20 * np.log10(np.maximum(q_y, 1e-10) / peak_amp)
-                axes[0].plot(x_fit, q_y_db, 'b-', label="4th order fit")
+                axes[0].plot(x_fit, q_y_db, 'k-', label="4th order fit")
             axes[0].set_xlim(Az_fit.min() - 5.0, Az_fit.max() + 5.0)
-        axes[0].axhline(-3.0, color='gray', linestyle=':', alpha=0.7, label="-3 dB Line")
+        axes[0].axhline(-3.0, color='black', linestyle=':', alpha=0.7, label="-3 dB Line")
         axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
         axes[0].set_ylabel("Normalized Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
         axes[0].legend(fontsize=14)
         axes[0].grid(True, linestyle='--', alpha=0.5)
-        axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='purple')
+        axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='black')
         axes[1].set_xlabel(f"{main_name} offset [arcmin]")
         axes[1].set_ylabel("Phase [deg]")
         axes[1].set_ylim(-180, 180)
@@ -808,11 +808,11 @@ if GENERATE_SLICES:
         el_label = f"{cross_name}{el_val_actual:+.1f}arcmin".replace("+", "p").replace("-", "m").replace(".", "_")
         fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
         axes[0].plot(Az_sorted, slice_amplitude_db[mask_el][sort_idx],
-                     marker='o', markersize=3, linewidth=1.0)
+                     marker='o', markersize=3, linewidth=1.0, color='black')
         axes[0].set_ylabel("Normalized Amplitude [dB]")
         axes[0].set_ylim(DB_MIN, 2.0)
         axes[1].plot(Az_sorted, np.rad2deg(np.angle(E_sorted)),
-                     marker='o', markersize=3, linewidth=1.0)
+                     marker='o', markersize=3, linewidth=1.0, color='black')
         axes[1].set_xlabel(f"{main_name} offset [arcmin]")
         axes[1].set_ylabel("Phase [deg]")
         axes[1].set_ylim(-180, 180)
