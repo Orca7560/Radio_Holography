@@ -50,7 +50,7 @@ plt.rcParams.update({
     "figure.titlesize": 18,
     "axes.titlesize": 18,
 })
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import MultipleLocator, MaxNLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from datetime import datetime, timedelta
 from scipy.optimize import curve_fit
@@ -380,6 +380,13 @@ def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
                 cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
                 ax.set_xlim(cx + half, cx - half) if x0 > x1 else ax.set_xlim(cx - half, cx + half)
                 ax.set_ylim(cy + half, cy - half) if y0 > y1 else ax.set_ylim(cy - half, cy + half)
+        if not aperture_map:
+            # Use one numerical interval for both angular axes. Automatic
+            # locators otherwise choose different steps for horizontal labels.
+            tick_values = MaxNLocator(nbins=7, steps=[1, 2, 5, 10]).tick_values(0, 2 * half)
+            tick_step = tick_values[1] - tick_values[0]
+            ax.xaxis.set_major_locator(MultipleLocator(tick_step))
+            ax.yaxis.set_major_locator(MultipleLocator(tick_step))
         ax.set_box_aspect(1)
         pos = ax.get_position(original=True)
         cax = fig.add_axes([pos.x1 + 0.12 / width, bottom / height,
