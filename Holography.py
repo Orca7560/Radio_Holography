@@ -1447,6 +1447,28 @@ for ax in axes:
 save_figure(fig, os.path.join(OUT_DIR, "surface_error_tilt_only.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
 
+# マスクなしの鏡面誤差を単独で表示する（チルト除去後）。
+# 中心・開口外・誤差閾値による画素の除外は行わない。
+fig, ax = plt.subplots(figsize=(8, 7))
+im = ax.imshow(surface_tilt_mm, extent=extent_ap, origin='lower',
+               cmap='coolwarm', vmin=vmin_val, vmax=vmax_val)
+fig.colorbar(im, ax=ax, label="Surface Error [mm]", extend="both")
+ax.set_xlabel("x [m]")
+ax.set_ylabel("y [m]")
+ax.set_xlim(-20, 20)
+ax.set_ylim(-20, 20)
+format_aperture_axes(ax)
+fig.tight_layout()
+surface_unmasked_no_circle_path = save_figure(
+    fig, os.path.join(OUT_DIR, "surface_error_unmasked_no_circle.png"), dpi=150)
+ax.add_patch(plt.Circle((0, 0), D / 2, color='black', fill=False,
+                       linestyle='--', linewidth=1.5, alpha=0.7))
+surface_unmasked_path = save_figure(
+    fig, os.path.join(OUT_DIR, "surface_error_unmasked.png"), dpi=150)
+plt.close(fig)
+print(f"[INFO] マスクなしの鏡面誤差図（円なし）: {surface_unmasked_no_circle_path}")
+print(f"[INFO] マスクなしの鏡面誤差図（円あり）: {surface_unmasked_path}")
+
 # 表示は中心ブロッキングのみ除外し、開口外側も残す。
 # RMSには画素全体が開口円内にある画素のみを使用する。
 surface_center_display_mask = ~center_block_mask & np.isfinite(surface_tilt_mm)
