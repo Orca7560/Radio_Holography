@@ -174,7 +174,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--slice-beam", action="store_true",
-    help="主走査軸に沿うビームパターンのスライスを出力する。",
+    help="主走査軸に沿う各断面を上段:振幅・下段:位相の図として slice/ に出力する。",
 )
 parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
                     help="ビームの主走査軸（既定: az）。格子化と断面図にも使用。")
@@ -252,13 +252,10 @@ OUT_DIR = os.path.expanduser(args.output_dir)
 BASE_DIR = os.path.dirname(os.path.abspath(BEAM_FILE))
 
 SLICE_DIR = os.path.join(OUT_DIR, "slice")
-SLICE_AMP_DIR = os.path.join(SLICE_DIR, "Amp")
-SLICE_PH_DIR  = os.path.join(SLICE_DIR, "Phase")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 if GENERATE_SLICES:
-    os.makedirs(SLICE_AMP_DIR, exist_ok=True)
-    os.makedirs(SLICE_PH_DIR, exist_ok=True)
+    os.makedirs(SLICE_DIR, exist_ok=True)
 
 print(f"Input : {BEAM_FILE}")
 print(f"Output: {OUT_DIR}")
@@ -802,19 +799,20 @@ if GENERATE_SLICES:
         E_sorted = E_corr[mask_el][sort_idx]
         el_val_actual = np.mean(cross_shifted[mask_el])
         el_label = f"{cross_name}{el_val_actual:+.1f}arcmin".replace("+", "p").replace("-", "m").replace(".", "_")
-        for values, ylabel, title, output_dir in (
-            (np.abs(E_sorted), "Amplitude", "Amplitude", SLICE_AMP_DIR),
-            (np.rad2deg(np.angle(E_sorted)), "Phase [deg]", "Phase", SLICE_PH_DIR),
-        ):
-            fig, ax = plt.subplots(figsize=(8, 4))
-            ax.plot(Az_sorted, values, marker='o', markersize=3, linewidth=1.0)
-            ax.set_xlabel(f"{main_name} offset [arcmin]")
-            ax.set_ylabel(ylabel)
-            ax.set_title(f"{main_name} Scan {title} ({cross_name} = {el_val_actual:+.1f}')")
+        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+        axes[0].plot(Az_sorted, np.abs(E_sorted),
+                     marker='o', markersize=3, linewidth=1.0)
+        axes[0].set_ylabel("Amplitude")
+        axes[1].plot(Az_sorted, np.rad2deg(np.angle(E_sorted)),
+                     marker='o', markersize=3, linewidth=1.0)
+        axes[1].set_xlabel(f"{main_name} offset [arcmin]")
+        axes[1].set_ylabel("Phase [deg]")
+        axes[1].set_ylim(-180, 180)
+        for ax in axes:
             ax.grid(True, linestyle='--', alpha=0.5)
-            fig.tight_layout()
-            save_figure(fig, os.path.join(output_dir, f"{el_label}.png"), dpi=150)
-            plt.close(fig)
+        fig.tight_layout()
+        save_figure(fig, os.path.join(SLICE_DIR, f"{el_label}.png"), dpi=150)
+        plt.close(fig)
 
 # =========================
 # 格子化 (アベレージングによる強固なグリッド作成)
