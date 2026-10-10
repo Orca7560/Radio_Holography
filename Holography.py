@@ -42,13 +42,13 @@ import matplotlib.pyplot as plt
 
 # 論文・スライドで縮小しても読みやすい文字サイズを全図へ適用。
 plt.rcParams.update({
-    "font.size": 20,
-    "axes.labelsize": 20,
-    "xtick.labelsize": 20,
-    "ytick.labelsize": 20,
-    "legend.fontsize": 20,
-    "figure.titlesize": 20,
-    "axes.titlesize": 20,
+    "font.size": 16,
+    "axes.labelsize": 18,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 14,
+    "figure.titlesize": 18,
+    "axes.titlesize": 18,
 })
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -345,6 +345,39 @@ def format_aperture_axes(ax):
     ax.set_aspect("equal", adjustable="box")
     ax.xaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
     ax.yaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
+
+
+def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
+                       aperture_map=False, zoom_size=None):
+    """Save equal-scale dB/phase panels, with colour bars matching map height."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+    for ax, values, cmap, lower, upper, label in (
+        (axes[0], amplitude_db, "inferno", DB_MIN, 0, "Normalized Amplitude [dB]"),
+        (axes[1], phase_deg, "twilight", -180, 180, "Phase [deg]"),
+    ):
+        im = ax.imshow(values, extent=extent, origin="lower", aspect="equal",
+                       cmap=cmap, vmin=lower, vmax=upper)
+        if aperture_map:
+            ax.set(xlabel="x [m]", ylabel="y [m]", xlim=(-20, 20), ylim=(-20, 20))
+            format_aperture_axes(ax)
+        else:
+            ax.set(xlabel="Az offset [arcmin]", ylabel="El offset [arcmin]")
+            if zoom_size is not None:
+                half = zoom_size / 2.0
+                ax.set_xlim(half, -half)
+                ax.set_ylim(-half, half)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.10)
+        fig.colorbar(im, cax=cax, label=label)
+    fig.tight_layout()
+    save_figure(fig, path, dpi=150)
+    if aperture_map:
+        for ax in axes:
+            ax.add_patch(plt.Circle((0, 0), D / 2, color="black", fill=False,
+                                   linestyle="--", linewidth=1.5, alpha=0.7))
+        circle_path = path.replace("_no_circle.png", ".png")
+        save_figure(fig, circle_path, dpi=150)
+    plt.close(fig)
 
 
 def gaussian(x, a, x0, sigma, offset):
@@ -731,7 +764,7 @@ if GENERATE_SLICES:
         axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
         axes[0].set_ylabel("Normalized Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
-        axes[0].legend(fontsize=20)
+        axes[0].legend(fontsize=14)
         axes[0].grid(True, linestyle='--', alpha=0.5)
         axes[1].plot(Az_el0, Ph_el0, '-', linewidth=1.0, color='purple')
         axes[1].set_xlabel(f"{main_name} offset [arcmin]")
@@ -924,6 +957,18 @@ with np.errstate(divide='ignore', invalid='ignore'):
     beam_grid_db = 20 * np.log10(beam_grid_amp / peak_amp)
     beam_grid_db = np.clip(beam_grid_db, a_min=DB_MIN, a_max=0)
 
+# 論文用2枚組: 左が規格化振幅(dB)、右が複素ビームの位相。
+plot_db_phase_pair(
+    beam_grid_db, np.rad2deg(np.angle(beam_grid)), extent_vals,
+    os.path.join(OUT_DIR, "beam_pattern_db_phase.png"))
+if ZOOM_SIZE_ARCMIN is not None:
+    pair_zoom_label = f"{ZOOM_SIZE_ARCMIN:g}".replace(".", "p")
+    plot_db_phase_pair(
+        beam_grid_db, np.rad2deg(np.angle(beam_grid)), extent_vals,
+        os.path.join(OUT_DIR, f"beam_pattern_db_phase_zoom_{pair_zoom_label}x{pair_zoom_label}arcmin.png"),
+        zoom_size=ZOOM_SIZE_ARCMIN)
+
+
 fig, ax = plt.subplots(figsize=(6, 5))
 im = ax.imshow(beam_grid_db, extent=extent_vals, cmap="inferno", vmin=DB_MIN, vmax=0, origin='lower', aspect='auto')
 fig.colorbar(im, ax=ax, label="Normalized Amplitude [dB]")
@@ -1069,6 +1114,11 @@ for ax in axes:
 save_figure(fig, os.path.join(OUT_DIR, "aperture_field.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
 
+# 左dB・右位相の開口面図（IFFT直後）。
+plot_db_phase_pair(
+    aperture_db, np.rad2deg(np.angle(aperture)), extent_aperture,
+    os.path.join(OUT_DIR, "aperture_field_db_phase_no_circle.png"), aperture_map=True)
+
 # 欠損セルを 0 とした IFFT。既存の nearest 補間結果とは別ファイルに保存し、
 # 後段の位相傾斜除去・鏡面 RMS の計算には使わない。
 raw_amp = np.abs(aperture_raw)
@@ -1169,6 +1219,12 @@ for ax in axes:
     ax.add_patch(plt.Circle((0, 0), D/2, color='black', fill=False, linestyle='--', linewidth=1.5, alpha=0.7))
 save_figure(fig, os.path.join(OUT_DIR, "aperture_field_corrected.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
+
+# 左dB・右位相の開口面図（位相傾斜除去後、wrapped）。
+plot_db_phase_pair(
+    aperture_db, phase_wrapped_deg, extent_aperture,
+    os.path.join(OUT_DIR, "aperture_field_corrected_db_phase_no_circle.png"),
+    aperture_map=True)
 
 # 平面除去前・Tilt除去の 比較プロット
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -1560,13 +1616,13 @@ for ref_rms_mm in [0.3, 0.7, 1.0]:
         ref_eta = np.exp(- (4 * np.pi * (ref_rms_mm * 1e-3) / wavelength_array)**2)
         ax.plot(freq_array / 1e9, ref_eta, linestyle='--', label=f'Ref RMS: {ref_rms_mm:.1f} mm')
 
-ax.set_title("Surface Efficiency vs Frequency (Ruze\'s Equation)", fontsize=20)
-ax.set_xlabel("Frequency [GHz]", fontsize=20)
-ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=20)
+ax.set_title("Surface Efficiency vs Frequency (Ruze\'s Equation)", fontsize=18)
+ax.set_xlabel("Frequency [GHz]", fontsize=18)
+ax.set_ylabel(r"Surface Efficiency ($\eta$)", fontsize=18)
 ax.set_xlim(6.5, 12.5)
 ax.set_ylim(0, 1.05)
 ax.grid(True, linestyle=':', alpha=0.7)
-ax.legend(fontsize=20)
+ax.legend(fontsize=14)
 fig.tight_layout()
 
 ruze_out_path = os.path.join(OUT_DIR, "ruze_efficiency.png")
@@ -1675,7 +1731,7 @@ def save_polar_figures(polar_field, r_edges, theta_edges, amplitude_reference,
             ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
             ax.set_title(panel_title, pad=20 if circular else 10)
             fig.colorbar(im, ax=ax, label=label, shrink=0.78, pad=0.1 if circular else 0.03)
-        fig.suptitle(title + '\n0 deg = +x, 90 deg = +y; counterclockwise', fontsize=20)
+        fig.suptitle(title + '\n0 deg = +x, 90 deg = +y; counterclockwise', fontsize=18)
         fig.tight_layout(rect=(0, 0, 1, 0.91))
         kind = 'polar' if circular else 'rtheta'
         path = os.path.join(out_dir, f'aperture_{kind}_{name}.png')
