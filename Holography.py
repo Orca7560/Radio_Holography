@@ -349,8 +349,14 @@ def format_aperture_axes(ax):
 
 def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
                        aperture_map=False, zoom_size=None):
-    """Save equal-scale dB/phase panels, with colour bars matching map height."""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+    """Save fixed-size square maps; full and zoom figures share one layout."""
+    width, height, side = 12.0, 5.5, 3.6
+    bottom = 0.85
+    fig = plt.figure(figsize=(width, height))
+    # Dimensions are in inches, so tick labels cannot resize either map.
+    axes = [fig.add_axes([left / width, bottom / height,
+                          side / width, side / height])
+            for left in (1.0, 7.0)]
     for ax, values, cmap, lower, upper, label in (
         (axes[0], amplitude_db, "inferno", DB_MIN, 0, "Normalized Amplitude [dB]"),
         (axes[1], phase_deg, "twilight", -180, 180, "Phase [deg]"),
@@ -366,10 +372,21 @@ def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
                 half = zoom_size / 2.0
                 ax.set_xlim(half, -half)
                 ax.set_ylim(-half, half)
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.10)
-        fig.colorbar(im, cax=cax, label=label)
-    fig.tight_layout()
+            else:
+                # Pad the shorter span to retain both a square frame and
+                # equal angular scale without stretching or dropping data.
+                x0, x1, y0, y1 = extent
+                half = max(abs(x1 - x0), abs(y1 - y0)) / 2.0
+                cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                ax.set_xlim(cx + half, cx - half) if x0 > x1 else ax.set_xlim(cx - half, cx + half)
+                ax.set_ylim(cy + half, cy - half) if y0 > y1 else ax.set_ylim(cy - half, cy + half)
+        ax.set_box_aspect(1)
+        pos = ax.get_position(original=True)
+        cax = fig.add_axes([pos.x1 + 0.12 / width, bottom / height,
+                            0.18 / width, side / height])
+        ticks = (np.arange(np.ceil(DB_MIN / 10.0) * 10.0, 1.0, 10.0)
+                 if cmap == "inferno" else np.arange(-180, 181, 60))
+        fig.colorbar(im, cax=cax, label=label, ticks=ticks)
     save_figure(fig, path, dpi=150)
     if aperture_map:
         for ax in axes:
