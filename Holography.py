@@ -373,13 +373,9 @@ def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
                 ax.set_xlim(half, -half)
                 ax.set_ylim(-half, half)
             else:
-                # Pad the shorter span to retain both a square frame and
-                # equal angular scale without stretching or dropping data.
-                x0, x1, y0, y1 = extent
-                half = max(abs(x1 - x0), abs(y1 - y0)) / 2.0
-                cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-                ax.set_xlim(cx + half, cx - half) if x0 > x1 else ax.set_xlim(cx - half, cx + half)
-                ax.set_ylim(cy + half, cy - half) if y0 > y1 else ax.set_ylim(cy - half, cy + half)
+                ax.set_xlim(60, -60)
+                ax.set_ylim(-60, 60)
+                half = 60.0
         if not aperture_map:
             # Use one numerical interval for both angular axes. Automatic
             # locators otherwise choose different steps for horizontal labels.
