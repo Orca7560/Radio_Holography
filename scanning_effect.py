@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Estimate and correct scan-lag offsets in raster beam measurements.
 
-Use either an SKD trajectory or beam.txt offsets with a supplied scan speed.
+Use a PRD trajectory, an SKD trajectory, or beam.txt offsets with a supplied scan speed.
 In SKD mode the summary and schedule are joined by timestamp. A trial
 time lag tau changes each sample coordinate as
 
@@ -15,6 +15,8 @@ enables the simultaneous two-dimensional search using the same criterion.
 The Airy score in that mode is diagnostic only; it does not select the lag.
 
 Usage:
+  python scanning_effect.py beam.txt --prd observation.prd --scan-axis az
+  python scanning_effect.py beam.txt --prd observation.prd --scan-speed 3
   python scanning_effect.py beam.txt schedule.skd
   python scanning_effect.py beam.txt --skd schedule.skd
   python scanning_effect.py beam.txt --scan-speed 3 --scan-axis el
@@ -27,7 +29,11 @@ Inputs:
                 least the columns Epoch, Amp, Phase, SNR (e.g. beam.txt
                 produced by group_up_txt_prd.py). Epoch must parse as
                 "%Y/%j %H:%M:%S.%f".
-  schedule      Optional in --scan-speed mode; otherwise a .skd file
+  --prd FILE    PRD pointing knots (YYYYDDDHHMMSS; columns 8/9: Az/El).
+                Directions and speeds are determined at Epoch + Length/2.
+                Existing beam offsets are retained; otherwise interpolate PRD.
+                --scan-speed can override speed magnitude in PRD mode.
+  schedule      Legacy .skd input, optional in PRD or --scan-speed mode; a .skd file
                 containing a $SKED block with per-scan
                 Az/El offsets in arcmin (used only to reconstruct the
                 commanded trajectory; the fitted lag is independent of the
@@ -175,6 +181,77 @@ def parse_skd(path: Path) -> pd.DataFrame:
     if not records:
         raise ValueError("no valid $SKED rows found")
     return pd.DataFrame(records).sort_values("time").reset_index(drop=True)
+
+
+def parse_prd(path: Path) -> pd.DataFrame:
+    """Read YYYYDDDHHMMSS pointing knots; columns 8/9 are Az/El arcmin."""
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) < 9 or not re.fullmatch(r"\d{13}", fields[0]):
+            continue
+        try:
+            stamp = pd.to_datetime(fields[0], format="%Y%j%H%M%S")
+            az, el = float(fields[7]), float(fields[8])
+        except ValueError:
+            continue
+        if np.isfinite([az, el]).all():
+            records.append(dict(time=stamp, az_arcmin=az, el_arcmin=el))
+    if len(records) < 2:
+        raise ValueError("PRD requires at least two valid pointing knots")
+    df = pd.DataFrame(records).sort_values("time").reset_index(drop=True)
+    if df.time.duplicated().any():
+        raise ValueError("PRD contains duplicate pointing timestamps")
+    return df
+
+
+def rows_from_prd(measurements: pd.DataFrame, prd: pd.DataFrame,
+                  gap_s: float, scan_axis: str, speed: float | None = None
+                  ) -> tuple[pd.DataFrame, list[ScanRow]]:
+    """Classify at integration midpoints using adjacent PRD knots, not SKD."""
+    df = measurements.copy().reset_index(drop=True)
+    length = (pd.to_numeric(df["Length"], errors="coerce").to_numpy()
+              if "Length" in df else np.zeros(len(df)))
+    if not np.isfinite(length).all() or (length < 0).any():
+        raise ValueError("Length must contain finite nonnegative seconds")
+    midpoint = pd.to_datetime(df.time).astype("datetime64[ns]").astype("int64").to_numpy() + np.rint(length * 5e8).astype("int64")
+    knots = pd.to_datetime(prd.time).astype("datetime64[ns]").astype("int64").to_numpy()
+    segment = np.searchsorted(knots, midpoint, side="right") - 1
+    valid = (segment >= 0) & (segment < len(knots) - 1)
+    if not valid.all():
+        raise ValueError(f"{np.count_nonzero(~valid)} integration midpoints lie outside PRD coverage")
+    duration = np.diff(knots) / 1e9
+    az_rate = np.diff(prd.az_arcmin.to_numpy()) / duration
+    el_rate = np.diff(prd.el_arcmin.to_numpy()) / duration
+    vx, vy = az_rate[segment], el_rate[segment]
+    elapsed = (midpoint - knots[segment]) / 1e9
+    # Existing beam offsets already represent the integration midpoint.
+    # Use PRD interpolation only when those coordinate columns are absent.
+    for source, target, values, velocity in (
+            ("Az_Offset", "az_arcmin", prd.az_arcmin.to_numpy(), vx),
+            ("El_Offset", "el_arcmin", prd.el_arcmin.to_numpy(), vy)):
+        df[target] = (pd.to_numeric(df[source], errors="coerce").to_numpy()
+                      if source in df else values[segment] + elapsed * velocity)
+    if not np.isfinite(df[["az_arcmin", "el_arcmin"]].to_numpy()).all():
+        raise ValueError("measurement offsets must be finite")
+    primary, cross = (vx, vy) if scan_axis == "az" else (vy, vx)
+    direction = np.where((np.abs(primary) > 1e-5) & (np.abs(cross) < 0.2),
+                         np.sign(primary), 0).astype(int)
+    if speed is not None:
+        vx = direction * speed if scan_axis == "az" else np.zeros(len(df))
+        vy = direction * speed if scan_axis == "el" else np.zeros(len(df))
+    dt = np.diff(df.time.astype("datetime64[ns]").astype("int64").to_numpy()) / 1e9
+    new = np.r_[True, (dt > gap_s) | (direction[1:] != direction[:-1]) |
+                ~np.isclose(vx[1:], vx[:-1]) | ~np.isclose(vy[1:], vy[:-1])]
+    df["row_id"] = np.cumsum(new) - 1
+    df["prd_segment"] = segment
+    rows = []
+    for rid, group in df.groupby("row_id"):
+        indices = group.index.to_numpy()
+        i = indices[0]
+        rows.append(ScanRow(int(rid), indices, float(vx[i]), float(vy[i]), int(direction[i])))
+    print("Direction: PRD coordinate changes at integration midpoints; stationary/cross-axis motion excluded")
+    return df, rows
 
 
 def join_by_time(meas: pd.DataFrame, skd: pd.DataFrame, tolerance_s: float) -> pd.DataFrame:
@@ -489,6 +566,10 @@ def main() -> int:
                          "(e.g. beam.txt from group_up_txt_prd.py)")
     p.add_argument("schedule", type=Path, nargs="?",
                    help="SKD schedule file (legacy positional form; alternatively --skd)")
+    p.add_argument("--prd", type=Path,
+                   help="PRD pointing knots: classify directions at integration midpoints; "
+                        "use beam offsets if present, otherwise interpolate PRD. "
+                        "Speeds come from PRD unless --scan-speed is also supplied.")
     p.add_argument("--skd", type=Path,
                    help="SKD trajectory: estimate speeds from coordinates and timestamps")
     p.add_argument("--scan-speed", "--scan-speed-arcmin-s", type=float, metavar="ARCMIN/S",
@@ -528,8 +609,10 @@ def main() -> int:
     if args.schedule is not None and args.skd is not None:
         p.error("specify the SKD only once: positional schedule or --skd")
     schedule = args.skd if args.skd is not None else args.schedule
-    if (schedule is None) == (args.scan_speed is None):
-        p.error("choose exactly one mode: SKD schedule or --scan-speed")
+    if args.prd is not None and schedule is not None:
+        p.error("--prd cannot be combined with an SKD schedule")
+    if args.prd is None and (schedule is None) == (args.scan_speed is None):
+        p.error("choose PRD (--prd), SKD schedule, or --scan-speed")
     if args.scan_speed is not None and (not np.isfinite(args.scan_speed) or args.scan_speed <= 0):
         p.error("--scan-speed must be a finite positive number in arcmin/s")
     if args.max_lag_ms <= 0 or args.lag_step_ms <= 0 or args.grid_size < 5:
@@ -540,7 +623,12 @@ def main() -> int:
 
     print("[1/4] Reading and matching input data...", file=sys.stderr, flush=True)
     measurements = parse_measurements(args.measurements)
-    if schedule is not None:
+    if args.prd is not None:
+        print(f"Trajectory: PRD {args.prd}; direction from PRD; "
+              + ("speed from PRD" if args.scan_speed is None else f"specified speed {args.scan_speed:g} arcmin/s"))
+        joined, rows = rows_from_prd(measurements, parse_prd(args.prd),
+                                     args.row_gap, args.scan_axis, args.scan_speed)
+    elif schedule is not None:
         print(f"Trajectory: SKD {schedule}; speed estimated per scan row")
         joined = join_by_time(measurements, parse_skd(schedule), args.match_tolerance)
         joined, rows = make_rows(joined, args.row_gap, scan_axis=args.scan_axis)
