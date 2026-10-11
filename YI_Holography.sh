@@ -298,6 +298,7 @@ group_up_common_opts+=(--scan-axis "$SCAN_AXIS")
 
 scanning_opts=()
 scanning_opts+=(--scan-axis "$SCAN_AXIS")
+[[ "$SCAN_AXIS" == "el" && -n "$EL_DRIVE_SPEED" ]] && scanning_opts+=(--scan-speed "$EL_DRIVE_SPEED")
 [[ -n "$MATCH_TOLERANCE" ]] && scanning_opts+=(--match-tolerance "$MATCH_TOLERANCE")
 [[ -n "$ROW_GAP" ]] && scanning_opts+=(--row-gap "$ROW_GAP")
 [[ -n "$MIN_SNR" ]] && scanning_opts+=(--min-snr "$MIN_SNR")
@@ -407,7 +408,7 @@ fi
 
 # ── scanning_effect.py : 走査lag推定 ──
 step "$STEP5_LABEL" "scanning_effect.py（走査lag推定, 探索刻み ${LAG_STEP_MS} ms）"
-run python3 "$PY_SCANNING" "$BEAM_SEARCH_FILE" "$SKD_FILE" \
+run python3 "$PY_SCANNING" "$BEAM_SEARCH_FILE" --prd "$PRD_FILE" \
     --outdir "${OBS_CODE}/scanning_result" "${scanning_opts[@]}"
 
 BEST_LAGS_CSV="${OBS_CODE}/scanning_result/best_lags.csv"
