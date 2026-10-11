@@ -360,12 +360,54 @@ def is_on_scan(scan, on_length=DEFAULT_ON_LENGTH):
     return math.isclose(xml_scan_duration(scan), on_length, rel_tol=0.0, abs_tol=1e-9)
 
 
+def make_offset_tasks(offset_scan_time, offset_step_time=None, scan_half=False):
+    """Build integration windows in output-sample units; retain legacy defaults."""
+    length = float(offset_scan_time * output)
+    step = length if offset_step_time is None else float(offset_step_time * output)
+    total = float(scan_time * output)
+    if not math.isfinite(step) or step < 1 or step > length:
+        raise ValueError("開始時刻の刻みは出力の時間分解能以上、積分時間以下にしてください。")
+    tasks = []
+    if scan_half:
+        half = length / 2.0
+        tasks.append({'length': half, 'skip': 0.0})
+        start = half
+        if offset_step_time is None:
+            # Keep the original edge/remainder treatment when no step is given.
+            while start + length <= total + 1e-9:
+                tasks.append({'length': length, 'skip': start})
+                start += length
+            remainder = total - start
+            if remainder > 0.1:
+                tasks.append({'length': remainder, 'skip': start})
+        else:
+            # Interior windows keep their full integration length. Anchor the
+            # final full window and half window to the end of the scan.
+            last_full_start = total - half - length
+            while start <= last_full_start + 1e-9:
+                tasks.append({'length': length, 'skip': start})
+                start += step
+            if last_full_start >= half and not math.isclose(
+                    tasks[-1]['skip'], last_full_start, abs_tol=1e-9):
+                tasks.append({'length': length, 'skip': last_full_start})
+            if last_full_start < half and length < total:
+                tasks.append({'length': length, 'skip': (total - length) / 2.0})
+            tasks.append({'length': half, 'skip': total - half})
+    else:
+        index = 0
+        while index * step + length <= total + 1e-9:
+            tasks.append({'length': length, 'skip': index * step})
+            index += 1
+    return tasks
+
+
 def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      add_quick_opt=False, bandscythe_only=False, scan_half=False,
                      scan_lag_ms=0.0, band=None,
                      scan_positions=None, forward_direction="increasing",
                      scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None,
-                     scan_axis="az", offset_scan_time=0.5, on_length=DEFAULT_ON_LENGTH):
+                     scan_axis="az", offset_scan_time=0.5, on_length=DEFAULT_ON_LENGTH,
+                     offset_step_time=None):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
     if not math.isfinite(offset_scan_time) or not 0 < offset_scan_time <= scan_time:
         raise ValueError(f"offsetスキャン積分時間は0より大きく{scan_time}秒以下にしてください。")
@@ -502,36 +544,9 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                         
                     elif is_offset:
                         print(f"  [INFO] offsetスキャンとして処理します: {timestamp_for_file} (XML length-skip={xml_scan_duration(scan):g} s)")
-                        length_val = float(offset_scan_time * output)  # 指定した積分時間
-                        
-                        if processor == "frinZ" and scan_half:
-                            # Optional edge treatment: the first and last
-                            # integrations are half length, with full-length
-                            # integrations between them.
-                            total_length = float(scan_time * output)  # 全体の長さ (4100.0)
-                            half_length = length_val / 2.0            # 25.0
-                            skip_val = 0.0
-                            
-                            # 最初のスキャン (length=25)
-                            tasks.append({'length': half_length, 'skip': skip_val})
-                            skip_val += half_length
-                            
-                            # 中間のスキャン (length=50)
-                            while skip_val + length_val <= total_length + 1e-9:
-                                tasks.append({'length': length_val, 'skip': skip_val})
-                                skip_val += length_val
-                                
-                            # 最後のスキャン (余り、通常は 25)
-                            rem_length = total_length - skip_val
-                            if rem_length > 0.1:  # 浮動小数点の誤差を考慮して 0.1 に設定
-                                tasks.append({'length': rem_length, 'skip': skip_val})
-                        else:
-                            # Default (also the v2 behaviour): divide the
-                            # entire scan into consecutive equal-length bins.
-                            skip_val = 0.0
-                            while skip_val <= skip_max + 1e-9: 
-                                tasks.append({'length': length_val, 'skip': skip_val})
-                                skip_val += skip_step
+                        tasks = make_offset_tasks(
+                            offset_scan_time, offset_step_time,
+                            scan_half=(processor == "frinZ" and scan_half))
 
                     if is_offset and apply_lags:
                         direction = directions[scan_start_datetime]
@@ -608,6 +623,7 @@ def main():
             "実行例:\n"
             "  python corr_fringe.py I25231Y --only-frinZ --on-length 10 --offset-scan-time 0.5\n"
             "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 1.0\n"
+            "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 0.5 --offset-step-time 0.125 --scan-half\n"
             "  python corr_fringe_v6.py I25231Y --only-corr\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe\n"
             "  python corr_fringe_v6.py I25231Y --only-frinZ-freq --scan-half\n"
@@ -637,7 +653,9 @@ def main():
     parser.add_argument("--on-length", type=float, default=DEFAULT_ON_LENGTH, metavar="SEC",
                         help="XMLのlength-skipがこの秒数ならON点と判定し、同じ秒数で積分する（既定: 10）。それ以外はoffset。")
     parser.add_argument("--offset-scan-time", type=float, default=0.5, metavar="SEC",
-                        help="OFF点のスキャン積分時間 [s]（既定: 0.5）。積分区間の時間間隔も同じ値にする。ON積分時間は--on-length。")
+                        help="OFF点のスキャン積分時間 [s]（既定: 0.5）。未指定の開始刻みも同じ値。ON積分時間は--on-length。")
+    parser.add_argument("--offset-step-time", type=float, default=None, metavar="SEC",
+                        help="offset積分の開始時刻の刻み [s]。既定は--offset-scan-timeと同じ。積分時間以下で指定。--scan-halfと併用可。ON積分は変更しない。")
     parser.add_argument("--cpu", type=int, help="gico3実行時のCPUコア数 (例: --cpu 10)")
     parser.add_argument(
         "--scan-half", action="store_true",
@@ -676,6 +694,11 @@ def main():
         parser.error("--offset-scan-time が出力の時間分解能より短すぎます。")
     if not math.isfinite(args.on_length) or args.on_length <= 0 or round(args.on_length * output) < 1:
         parser.error("--on-length は有限の正の秒数で、出力の時間分解能以上にしてください。")
+    if args.offset_step_time is not None:
+        if (not math.isfinite(args.offset_step_time) or
+                args.offset_step_time * output < 1 or
+                args.offset_step_time > args.offset_scan_time):
+            parser.error("--offset-step-time は出力の時間分解能以上、--offset-scan-time 以下の有限の秒数にしてください。")
     obs_code = args.obs_code
     if args.scan_lag_ms != 0 and (
         args.scan_lag_increasing_ms is not None or
@@ -773,7 +796,8 @@ def main():
                     forward_direction=args.forward_direction,
                     scan_axis=args.scan_axis,
                     offset_scan_time=args.offset_scan_time,
-                    on_length=args.on_length
+                    on_length=args.on_length,
+                    offset_step_time=args.offset_step_time
                 )
         else:
             run_fringe_steps(
@@ -790,7 +814,8 @@ def main():
                 forward_direction=args.forward_direction,
                 scan_axis=args.scan_axis,
                 offset_scan_time=args.offset_scan_time,
-                on_length=args.on_length
+                on_length=args.on_length,
+                    offset_step_time=args.offset_step_time
             )
 
     print("--- 全ての処理が完了しました ---")
