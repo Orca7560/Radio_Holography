@@ -209,11 +209,11 @@ parser.add_argument(
 )
 parser.add_argument(
     "--exclude-center-crossings", dest="include_center_crossings", action="store_false", default=True,
-    help="位相補正から中心通過点を除外し、指定したLengthの停止ONだけを使う。既定は中心座標かつAmp > 1の通過点も含める。",
+    help="位相補正から中心通過点を除外し、指定したLengthの停止ONだけを使う。既定は中心座標かつAmp >= 0.8の通過点も含める。",
 )
 parser.add_argument(
     "--on-phase-linear-fit", action="store_true",
-    help="Amp > 1 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
+    help="Amp >= 0.8 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
          "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
 )
 if len(sys.argv) == 1:
@@ -604,13 +604,14 @@ on_mask = ((Az == 0) & (El == 0)
 stationary_on_mask = on_mask.copy()
 if args.include_center_crossings:
     on_mask = (Az == 0) & (El == 0)
-on_idx = np.flatnonzero(on_mask & (np.abs(E) > 1.0))
+on_amplitude_mask = df["Amp"].to_numpy() >= 0.8
+on_idx = np.flatnonzero(on_mask & on_amplitude_mask)
 print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
-      f"{np.count_nonzero(stationary_on_mask)}点、Amp > 1 の停止ON候補 "
-      f"{np.count_nonzero(stationary_on_mask & (np.abs(E) > 1.0))}点")
+      f"{np.count_nonzero(stationary_on_mask)}点、Amp >= 0.8 の停止ON候補 "
+      f"{np.count_nonzero(stationary_on_mask & on_amplitude_mask)}点")
 if args.include_center_crossings:
     print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
-          f"{np.count_nonzero(on_mask & ~stationary_on_mask & (np.abs(E) > 1.0))}点、"
+          f"{np.count_nonzero(on_mask & ~stationary_on_mask & on_amplitude_mask)}点、"
           f"合計 {len(on_idx)}点")
 E_corr = E.copy()
 
@@ -625,15 +626,15 @@ if len(on_idx) >= 2:
         slope, intercept = np.polyfit(fit_time, on_phases, 1)
         phase_reference = slope * (times_sec - times_sec[on_idx[0]]) + intercept
         reference_label = "All ON points: linear fit (correction)"
-        print(f"[INFO] Amp > 1 のON点 {len(on_idx)} 点から位相を直線近似: "
+        print(f"[INFO] Amp >= 0.8 のON点 {len(on_idx)} 点から位相を直線近似: "
               f"{np.rad2deg(slope) * 3600:+.3f} deg/hour")
     else:
         phase_reference = np.interp(times_sec, times_sec[on_idx], on_phases)
     E_corr *= np.exp(-1j * phase_reference)
 else:
     if ON_PHASE_LINEAR_FIT:
-        raise ValueError("--on-phase-linear-fit には Amp > 1 のON点が2点以上必要です。")
-    print(f"[WARN] 位相補正に使えるON点 (Amp > 1) が{len(on_idx)}点のため、補正しません。")
+        raise ValueError("--on-phase-linear-fit には Amp >= 0.8 のON点が2点以上必要です。")
+    print(f"[WARN] 位相補正に使えるON点 (Amp >= 0.8) が{len(on_idx)}点のため、補正しません。")
 
 # 全測定点を薄い灰色で表示し、実際に位相補正に使ったONを黒い三角で重ねる。
 # 白黒印刷でも、中心通過点と較正用ONをマーカーの形で区別できる。
@@ -647,7 +648,7 @@ ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
                rasterized=True, label="All measurements")
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
-               zorder=3, label="ON used (Amp > 1)")
+               zorder=3, label="ON used (Amp >= 0.8)")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
 
@@ -656,7 +657,7 @@ ax_phase.scatter(time_axis, phase_values, s=3, c="0.65", alpha=0.45,
                  rasterized=True, label="All measurements")
 ax_phase.scatter(time_axis[plot_on_idx], phase_values[plot_on_idx], s=48,
                  marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
-                 zorder=3, label="ON used (Amp > 1)")
+                 zorder=3, label="ON used (Amp >= 0.8)")
 if phase_reference is not None:
     # 全測定点と同じ[-180, 180]表示へ折り返す。±180度の境界では
     # 線を切り、図に存在しない斜めのジャンプを描かない。
