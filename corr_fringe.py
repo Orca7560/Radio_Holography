@@ -369,9 +369,12 @@ def make_offset_tasks(offset_scan_time, offset_step_time=None, scan_half=False):
         raise ValueError("開始時刻の刻みは出力の時間分解能以上、積分時間以下にしてください。")
     tasks = []
     if scan_half:
-        half = length / 2.0
-        tasks.append({'length': half, 'skip': 0.0})
-        start = half
+        half = length / 2.0  # Existing trailing half integration.
+        first_half = float(math.floor(step / 2.0 if offset_step_time is not None else half))
+        if first_half < 1:
+            raise ValueError("先頭の半分積分が出力の時間分解能より短すぎます。")
+        tasks.append({'length': first_half, 'skip': 0.0})
+        start = first_half
         if offset_step_time is None:
             # Keep the original edge/remainder treatment when no step is given.
             while start + length <= total + 1e-9:
@@ -387,17 +390,22 @@ def make_offset_tasks(offset_scan_time, offset_step_time=None, scan_half=False):
             while start <= last_full_start + 1e-9:
                 tasks.append({'length': length, 'skip': start})
                 start += step
-            if last_full_start >= half and not math.isclose(
+            if last_full_start >= first_half and not math.isclose(
                     tasks[-1]['skip'], last_full_start, abs_tol=1e-9):
                 tasks.append({'length': length, 'skip': last_full_start})
-            if last_full_start < half and length < total:
-                tasks.append({'length': length, 'skip': (total - length) / 2.0})
+            if last_full_start < first_half:
+                tasks.append({'length': length, 'skip': min(first_half, total - length)})
             tasks.append({'length': half, 'skip': total - half})
     else:
         index = 0
         while index * step + length <= total + 1e-9:
             tasks.append({'length': length, 'skip': index * step})
             index += 1
+    if scan_half:
+        # Integer sample counts: floor the leading window, ceil the trailing
+        # one and anchor it to the scan end so rounding cannot overrun data.
+        tasks[-1]['length'] = float(math.ceil(tasks[-1]['length']))
+        tasks[-1]['skip'] = total - tasks[-1]['length']
     return tasks
 
 
@@ -659,7 +667,7 @@ def main():
     parser.add_argument("--cpu", type=int, help="gico3実行時のCPUコア数 (例: --cpu 10)")
     parser.add_argument(
         "--scan-half", action="store_true",
-        help="frinZのoffset走査で、最初と最後だけ積分長を半分にします（既定では全区間を等分割）。"
+        help="frinZのoffset走査の先頭・末尾を半分積分にする。--offset-step-time併用時、先頭は開始刻みの半分、末尾は積分時間の半分。先頭は切り捨て、末尾は切り上げ。未併用時は従来の端点処理。"
     )
     parser.add_argument(
         "--scan-lag-ms", type=float, default=0.0, metavar="MS",
@@ -699,6 +707,8 @@ def main():
                 args.offset_step_time * output < 1 or
                 args.offset_step_time > args.offset_scan_time):
             parser.error("--offset-step-time は出力の時間分解能以上、--offset-scan-time 以下の有限の秒数にしてください。")
+    if args.scan_half and args.offset_step_time is not None and math.floor(args.offset_step_time * output / 2.0) < 1:
+        parser.error("--scan-half の先頭積分（--offset-step-time の半分）が出力の時間分解能より短すぎます。")
     obs_code = args.obs_code
     if args.scan_lag_ms != 0 and (
         args.scan_lag_increasing_ms is not None or
