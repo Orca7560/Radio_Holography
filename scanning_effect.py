@@ -218,8 +218,22 @@ def rows_from_prd(measurements: pd.DataFrame, prd: pd.DataFrame,
     knots = pd.to_datetime(prd.time).astype("datetime64[ns]").astype("int64").to_numpy()
     segment = np.searchsorted(knots, midpoint, side="right") - 1
     valid = (segment >= 0) & (segment < len(knots) - 1)
+    if not valid.any():
+        raise ValueError("no integration midpoints fall within PRD coverage; check observation date and PRD")
     if not valid.all():
-        raise ValueError(f"{np.count_nonzero(~valid)} integration midpoints lie outside PRD coverage")
+        excluded = np.flatnonzero(~valid)
+        print(f"[WARN] {len(excluded)} integration midpoints lie outside PRD coverage "
+              f"[{prd.time.iloc[0]}, {prd.time.iloc[-1]}). "
+              "Excluded from lag estimation; original epochs will be preserved.",
+              file=sys.stderr)
+        for i in excluded[:5]:
+            print(f"  midpoint={pd.Timestamp(midpoint[i])}, "
+                  f"Epoch={df.time.iloc[i]}, Length={length[i]:g} s", file=sys.stderr)
+        if len(excluded) > 5:
+            print(f"  ... {len(excluded) - 5} more excluded points", file=sys.stderr)
+        df = df.loc[valid].reset_index(drop=True)
+        midpoint = midpoint[valid]
+        segment = segment[valid]
     duration = np.diff(knots) / 1e9
     az_rate = np.diff(prd.az_arcmin.to_numpy()) / duration
     el_rate = np.diff(prd.el_arcmin.to_numpy()) / duration
