@@ -66,9 +66,9 @@ beam.txt の作成:
 上記の解析オプションは解析サーバーの YI_Holography.sh にそのまま渡す。
 
 処理の流れ:
-  1. 解析サーバー（IP20）に観測コードのディレクトリを作成
+  1. 解析サーバー（192.168.46.20）に観測コードのディレクトリを作成
   2. IP61 の /mnt/raid から同じ時刻の S1/S2 .dat を照合して転送
-     ゲートに pv があれば転送速度と残り時間も表示
+     scp -3 でゲート経由の転送を行う
   3. 観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
@@ -121,7 +121,7 @@ while [[ $# -gt 0 ]]; do
 done
 YI_OPTS+=(--antenna "$ANTENNA")
 
-for program in ssh sshpass date; do
+for program in ssh scp sshpass date; do
     command -v "$program" >/dev/null || { echo "[ERROR] $program が必要です。" >&2; exit 1; }
 done
 
@@ -147,6 +147,8 @@ if ! YEAR_START_EPOCH=$(date -u -d "${OBS_YEAR}-01-01" +%s); then
 fi
 OBS_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1) * 86400))" +%Y%j)
 DAT_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1 + DAT_OFFSET_DAYS) * 86400))" +%Y%j)
+SOURCE_HOST=ymgusr@192.168.6.61
+TARGET_HOST=oper@192.168.46.20
 HOLO_DIR=/mnt/yi_raid5/Holography
 TARGET_DIR=$HOLO_DIR/$OBS_CODE
 
@@ -169,30 +171,15 @@ remote_bash() {
 }
 
 echo '=== 1. 解析サーバーに転送先を作成 ==='
-remote_bash oper@192.168.0.20 "$TARGET_DIR" <<'REMOTE'
+remote_bash "$TARGET_HOST" "$TARGET_DIR" <<'REMOTE'
 set -euo pipefail
 mkdir -p -- "$1/raw"
 REMOTE
 
 echo '=== 2. IP61 の S1/S2 ペアを検証して転送 ==='
-# ゲートから両サーバーに認証し、IP61 → ゲート → 解析サーバーとストリーム転送する。
-# IP61 上で解析サーバーへ SSH する必要はない。
-# IP61 が先頭に送る合計ファイルサイズを読み、pv があれば転送速度と残り時間を表示する。
-receive_with_progress() {
-    local total_size
-    if ! IFS= read -r total_size || [[ ! $total_size =~ ^[0-9]+$ ]]; then
-        echo '[ERROR] IP61 から転送サイズを取得できませんでした。' >&2
-        return 1
-    fi
-    if command -v pv >/dev/null 2>&1; then
-        pv -f -pterb -s "$total_size" | \
-            sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
-    else
-        echo '[INFO] ゲートに pv がないため残り時間は表示できません（転送は続行します）。' >&2
-        sshpass -e ssh -T oper@192.168.0.20 "tar -C '$TARGET_DIR' -xf -"
-    fi
-}
-remote_bash ymgusr@192.168.6.61 "$OBS_CODE" "$DAT_DAY" <<'REMOTE' | receive_with_progress
+# S1/S2をIP61で照合し、ゲートからscp -3で転送する。
+# IP61から解析サーバーへの直接SSHは使用しない。
+DAT_FILE_LIST=$(remote_bash "$SOURCE_HOST" "$OBS_CODE" "$DAT_DAY" <<'REMOTE'
 set -euo pipefail
 obs_code=$1
 dat_day=$2
@@ -236,21 +223,23 @@ for time in "${!s2_by_time[@]}"; do
     fi
 done
 
-echo "${#s1_files[@]} 組の .dat をゲート経由で転送します。" >&2
-names=()
-total_size=0
-for file in "${s1_files[@]}" "${s2_files[@]}"; do
-    names+=("${file##*/}")
-    size=$(stat -c %s -- "$file")
-    total_size=$((total_size + size))
-done
-printf '%s\n' "$total_size"
-tar -C /mnt/raid -cf - -- "${names[@]}"
+echo "${#s1_files[@]} 組の .dat をscpで転送します。" >&2
+printf '%s\n' "${s1_files[@]}" "${s2_files[@]}"
 REMOTE
+)
+SCP_SOURCES=()
+while IFS= read -r file; do
+    [[ -n $file ]] && SCP_SOURCES+=("$SOURCE_HOST:$file")
+done <<< "$DAT_FILE_LIST"
+if (( ${#SCP_SOURCES[@]} == 0 )); then
+    echo '[ERROR] 転送対象の .dat がありません。' >&2
+    exit 1
+fi
+sshpass -e scp -3 -o BatchMode=no -- "${SCP_SOURCES[@]}" "$TARGET_HOST:$TARGET_DIR/"
 echo 'S1/S2 の転送が完了しました。'
 
 echo '=== 3. 観測日の .raw リンクを作り YI_Holography.sh を実行 ==='
-remote_bash oper@192.168.0.20 "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
+remote_bash "$TARGET_HOST" "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
 set -euo pipefail
 obs_code=$1
 obs_day=$2
