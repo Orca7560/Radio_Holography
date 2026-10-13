@@ -8,7 +8,7 @@ usage() {
 使い方: autoHolo.sh OBS_CODE [オプション]
 
 位置引数:
-  OBS_CODE                    観測コード（例: I26184Y）。YYDDD を観測日とする
+  OBS_CODE                    観測コード（例: I26184Y、I26184YA、I26184YB）。YYDDD を観測日とする
 
 autoHolo.sh 固有:
   --dat-day-offset DAYS       .datの日付 - 観測日の日数（既定: 2）
@@ -73,6 +73,8 @@ beam.txt の作成:
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
 実行例:
+  ./autoHolo.sh I26286YA --scan-axis el --antenna 32
+  ./autoHolo.sh I26286YB --scan-axis el --antenna 34
   ./autoHolo.sh I26184Y --scan-axis az
   ./autoHolo.sh I26184Y --scan-axis el --antenna 32 --cpu 10
   ./autoHolo.sh I26184Y --scan-axis el --el-drive-speed 3 --scan-half --polar
@@ -87,8 +89,8 @@ if [[ $1 == -h || $1 == --help ]]; then usage; exit 0; fi
 
 OBS_CODE=$1
 shift
-if [[ ! $OBS_CODE =~ ^[A-Za-z][0-9]{5}[A-Za-z]$ ]]; then
-    echo "[ERROR] 観測コードは I26184Y のような形式で指定してください。" >&2
+if [[ ! $OBS_CODE =~ ^[A-Za-z][0-9]{5}[A-Za-z]([A-Z])?$ ]]; then
+    echo "[ERROR] 観測コードは I26184Y または I26184YA、I26184YB のような形式で指定してください。" >&2
     exit 1
 fi
 
