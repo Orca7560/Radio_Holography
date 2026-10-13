@@ -67,10 +67,10 @@ beam.txt の作成:
 上記の解析オプションは解析サーバーの YI_Holography.sh にそのまま渡す。
 
 処理の流れ:
-  1. 解析サーバー（192.168.46.20）に観測コードのディレクトリを作成
+  1. 解析サーバー（192.168.0.20）に観測コードのディレクトリを作成
   2. IP61 の /mnt/raid から同じ時刻の S1/S2 .dat を照合して転送
-     scp -3 でゲート経由の転送を行う
-  3. 観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
+     scp -3 でゲート経由で 192.168.46.20 に転送する
+  3. 192.168.0.20 で観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
 実行例:
@@ -151,7 +151,8 @@ fi
 OBS_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1) * 86400))" +%Y%j)
 DAT_DAY=$(date -u -d "@$((YEAR_START_EPOCH + (OBS_DOY - 1 + DAT_OFFSET_DAYS) * 86400))" +%Y%j)
 SOURCE_HOST=ymgusr@192.168.6.61
-TARGET_HOST=oper@192.168.46.20
+TRANSFER_HOST=oper@192.168.46.20
+ANALYSIS_HOST=oper@192.168.0.20
 HOLO_DIR=/mnt/yi_raid5/Holography
 TARGET_DIR=$HOLO_DIR/$OBS_CODE
 
@@ -174,7 +175,7 @@ remote_bash() {
 }
 
 echo '=== 1. 解析サーバーに転送先を作成 ==='
-remote_bash "$TARGET_HOST" "$TARGET_DIR" <<'REMOTE'
+remote_bash "$ANALYSIS_HOST" "$TARGET_DIR" <<'REMOTE'
 set -euo pipefail
 mkdir -p -- "$1/raw"
 REMOTE
@@ -238,11 +239,11 @@ if (( ${#SCP_SOURCES[@]} == 0 )); then
     echo '[ERROR] 転送対象の .dat がありません。' >&2
     exit 1
 fi
-sshpass -e scp -3 -o BatchMode=no -- "${SCP_SOURCES[@]}" "$TARGET_HOST:$TARGET_DIR/"
+sshpass -e scp -3 -o BatchMode=no -- "${SCP_SOURCES[@]}" "$TRANSFER_HOST:$TARGET_DIR/"
 echo 'S1/S2 の転送が完了しました。'
 
 echo '=== 3. 観測日の .raw リンクを作り YI_Holography.sh を実行 ==='
-remote_bash "$TARGET_HOST" "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
+remote_bash "$ANALYSIS_HOST" "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
 set -euo pipefail
 obs_code=$1
 obs_day=$2
