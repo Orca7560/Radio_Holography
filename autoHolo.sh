@@ -24,8 +24,9 @@ autoHolo.sh 固有:
   --band-split N              8192–8704 MHz をN分割（512の約数）
   --exclude-center-crossings   位相補正から中心通過点を除外（既定: 通過点も含む）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
-  --offset-scan-time SEC      OFF点の積分時間と時間間隔 [s]（既定: 0.5、ON積分時間は--on-length）
-  --scan-half                 offset走査の最初と最後の積分長を半分にする
+  --offset-scan-time SEC      OFF点の積分時間 [s]（既定: 0.5、ON積分時間は--on-length）
+  --offset-step-time SEC      OFF点の積分開始刻み [s]（省略時は積分時間と同じ）
+  --scan-half                 端点を半分積分にする。開始刻み指定時は先頭が刻みの半分
   --scan-axis {az,el}         主走査軸（既定: az、縦走査は el）
   --forward-direction {increasing,decreasing}
                                片方向ラグ指定時の往路方向。正逆別推定には影響しない
