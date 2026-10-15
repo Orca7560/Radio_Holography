@@ -166,7 +166,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--center-on-peak", action="store_true",
-    help="全測定点の最大振幅点を原点に移し（ON点を含む）、移動前のピーク座標と実際のAz/El移動量を表示する。既定は入力座標のまま解析・作図する。",
+    help="較正用の停止ONを除いたoffsetビームマップの実測セル最大振幅を原点に移し、移動量を表示する。既定は入力座標のまま解析・作図する。",
 )
 parser.add_argument(
     "--polar", action="store_true",
@@ -209,11 +209,11 @@ parser.add_argument(
 )
 parser.add_argument(
     "--exclude-center-crossings", dest="include_center_crossings", action="store_false", default=True,
-    help="位相補正から中心通過点を除外し、指定したLengthの停止ONだけを使う。既定は中心座標かつAmp >= 0.8の通過点も含める。",
+    help="位相補正から中心通過点を除外し、指定したLengthの停止ONだけを使う。既定は中心座標かつAmp >= 0.4の通過点も含める。",
 )
 parser.add_argument(
     "--on-phase-linear-fit", action="store_true",
-    help="Amp >= 0.8 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
+    help="Amp >= 0.4 の全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
          "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
 )
 if len(sys.argv) == 1:
@@ -575,29 +575,31 @@ print(f"[INFO] PRDの折返し中の{cross_axis}座標は、最寄りの本走�
 E, Az, El, SNR = df["E"].values, df["Az"].values, df["El"].values, df["SNR"].values
 times_sec = df["Epoch"].astype(np.int64).values / 1e9  
 
+def offset_map_peak(az, el, field, scan_mask, step_az, step_el):
+    """Peak of observed complex-averaged raster cells, excluding stationary ON."""
+    if not np.any(scan_mask):
+        raise ValueError("ピーク位置を求めるoffset走査点がありません。")
+    az, el, field = az[scan_mask], el[scan_mask], field[scan_mask]
+    x_axis = np.arange(az.min(), az.max() + step_az / 2, step_az)
+    y_axis = np.arange(el.min(), el.max() + step_el / 2, step_el)
+    sums = np.zeros((len(y_axis), len(x_axis)), dtype=complex)
+    counts = np.zeros(sums.shape, dtype=int)
+    for x_value, y_value, value in zip(az, el, field):
+        ix, iy = np.argmin(np.abs(x_axis - x_value)), np.argmin(np.abs(y_axis - y_value))
+        sums[iy, ix] += value
+        counts[iy, ix] += 1
+    amplitude = np.full(sums.shape, np.nan)
+    occupied = counts > 0
+    amplitude[occupied] = np.abs(sums[occupied] / counts[occupied])
+    iy, ix = np.unravel_index(np.nanargmax(amplitude), amplitude.shape)
+    return x_axis[ix], y_axis[iy]
+
+
 az_offset = MANUAL_AZ_OFFSET_ARCMIN
 el_offset = MANUAL_EL_OFFSET_ARCMIN
 
-if AUTO_SPACE_ALIGN:
-    max_idx = np.argmax(np.abs(E))
-    az_offset = Az[max_idx]
-    el_offset = El[max_idx]
-
 Az_shifted = Az - az_offset
 El_shifted = El - el_offset
-
-# 実際に座標へ加えた移動量を、後段のガウスフィットとは独立に表示する。
-coordinate_shift_az = -az_offset
-coordinate_shift_el = -el_offset
-coordinate_shift_total = np.hypot(coordinate_shift_az, coordinate_shift_el)
-if AUTO_SPACE_ALIGN:
-    print(f"[INFO] 移動前の最大振幅点: Az={az_offset:+.3f}', El={el_offset:+.3f}'")
-    print("[INFO] --center-on-peak: 最大振幅点を原点へ移動しました。")
-print(f"[INFO] ビーム座標の移動量（移動後−移動前）: "
-      f"Az={coordinate_shift_az:+.3f}' ({coordinate_shift_az*60:+.1f} arcsec), "
-      f"El={coordinate_shift_el:+.3f}' ({coordinate_shift_el*60:+.1f} arcsec)")
-print(f"[INFO] ビーム座標の総移動量: {coordinate_shift_total:.3f}' "
-      f"({coordinate_shift_total*60:.1f} arcsec)")
 
 cross_shifted = El_shifted if args.scan_axis == "az" else Az_shifted
 _, cross_inverse = np.unique(np.round(cross_shifted, 2), return_inverse=True)
@@ -617,10 +619,10 @@ on_mask = ((Az == 0) & (El == 0)
 stationary_on_mask = on_mask.copy()
 if args.include_center_crossings:
     on_mask = (Az == 0) & (El == 0)
-on_amplitude_mask = df["Amp"].to_numpy() >= 0.8
+on_amplitude_mask = df["Amp"].to_numpy() >= 0.4
 on_idx = np.flatnonzero(on_mask & on_amplitude_mask)
 print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
-      f"{np.count_nonzero(stationary_on_mask)}点、Amp >= 0.8 の停止ON候補 "
+      f"{np.count_nonzero(stationary_on_mask)}点、Amp >= 0.4 の停止ON候補 "
       f"{np.count_nonzero(stationary_on_mask & on_amplitude_mask)}点")
 if args.include_center_crossings:
     print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
@@ -639,15 +641,15 @@ if len(on_idx) >= 2:
         slope, intercept = np.polyfit(fit_time, on_phases, 1)
         phase_reference = slope * (times_sec - times_sec[on_idx[0]]) + intercept
         reference_label = "All ON points: linear fit (correction)"
-        print(f"[INFO] Amp >= 0.8 のON点 {len(on_idx)} 点から位相を直線近似: "
+        print(f"[INFO] Amp >= 0.4 のON点 {len(on_idx)} 点から位相を直線近似: "
               f"{np.rad2deg(slope) * 3600:+.3f} deg/hour")
     else:
         phase_reference = np.interp(times_sec, times_sec[on_idx], on_phases)
     E_corr *= np.exp(-1j * phase_reference)
 else:
     if ON_PHASE_LINEAR_FIT:
-        raise ValueError("--on-phase-linear-fit には Amp >= 0.8 のON点が2点以上必要です。")
-    print(f"[WARN] 位相補正に使えるON点 (Amp >= 0.8) が{len(on_idx)}点のため、補正しません。")
+        raise ValueError("--on-phase-linear-fit には Amp >= 0.4 のON点が2点以上必要です。")
+    print(f"[WARN] 位相補正に使えるON点 (Amp >= 0.4) が{len(on_idx)}点のため、補正しません。")
 
 # 全測定点を薄い灰色で表示し、実際に位相補正に使ったONを黒い三角で重ねる。
 # 白黒印刷でも、中心通過点と較正用ONをマーカーの形で区別できる。
@@ -661,7 +663,7 @@ ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
                rasterized=True, label="All measurements")
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
-               zorder=3, label="ON used (Amp >= 0.8)")
+               zorder=3, label="ON used (Amp >= 0.4)")
 ax_amp.set_ylabel("Amplitude")
 ax_amp.grid(True, alpha=0.25)
 
@@ -670,7 +672,7 @@ ax_phase.scatter(time_axis, phase_values, s=3, c="0.65", alpha=0.45,
                  rasterized=True, label="All measurements")
 ax_phase.scatter(time_axis[plot_on_idx], phase_values[plot_on_idx], s=48,
                  marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
-                 zorder=3, label="ON used (Amp >= 0.8)")
+                 zorder=3, label="ON used (Amp >= 0.4)")
 if phase_reference is not None:
     # 全測定点と同じ[-180, 180]表示へ折り返す。±180度の境界では
     # 線を切り、図に存在しない斜めのジャンプを描かない。
@@ -691,14 +693,35 @@ diagnostic_path = save_figure(
 plt.close(fig)
 print(f"[INFO] ON位相補正の確認図: {diagnostic_path}")
 
+# 位相較正にはONを使用するが、ビーム中心推定には停止ONを使用しない。
+raster_mask = ~stationary_on_mask
+if AUTO_SPACE_ALIGN:
+    peak_az, peak_el = offset_map_peak(
+        Az_shifted, El_shifted, E_corr, raster_mask, SCAN_STEP_AZ, SCAN_STEP_EL)
+    Az_shifted = Az_shifted - peak_az
+    El_shifted = El_shifted - peak_el
+    az_offset += peak_az
+    el_offset += peak_el
+    print(f"[INFO] 移動前のoffsetビームマップのピーク: Az={az_offset:+.3f}', El={el_offset:+.3f}'")
+    print("[INFO] --center-on-peak: 停止ONを除いた実測セルのピークを原点へ移動しました。")
+print(f"[INFO] ビーム座標の移動量（移動後−移動前）: "
+      f"Az={-az_offset:+.3f}' ({-az_offset*60:+.1f} arcsec), "
+      f"El={-el_offset:+.3f}' ({-el_offset*60:+.1f} arcsec)")
+print(f"[INFO] ビーム座標の総移動量: {np.hypot(az_offset, el_offset):.3f}' "
+      f"({np.hypot(az_offset, el_offset)*60:.1f} arcsec)")
+
 if OFFSET_LIMIT_ARCMIN is not None:
     limit_mask = (np.abs(Az_shifted) <= OFFSET_LIMIT_ARCMIN) & (np.abs(El_shifted) <= OFFSET_LIMIT_ARCMIN)
+    raster_mask = raster_mask[limit_mask]
     Az, El, Az_shifted, El_shifted, E_corr, SNR, times_sec = Az[limit_mask], El[limit_mask], Az_shifted[limit_mask], El_shifted[limit_mask], E_corr[limit_mask], SNR[limit_mask], times_sec[limit_mask]
 
 valid_scan_mask = np.ones(len(Az), dtype=bool)
 is_center = (Az == 0) & (El == 0)
 
-if np.sum(is_center) > 1:
+if AUTO_SPACE_ALIGN:
+    # Keep all moving center crossings; never put stationary ON back into the map.
+    valid_scan_mask = raster_mask.copy()
+elif np.sum(is_center) > 1:
     valid_scan_mask[is_center] = False 
     for is_scan in [(El == 0) & (Az != 0), (Az == 0) & (El != 0)]:
         if np.sum(is_scan) > 0:
@@ -976,7 +999,12 @@ else:
     save_figure(fig, os.path.join(OUT_DIR, "main_beam_gaussian_fit.png"), dpi=150)
     plt.close(fig)
 
-extent_vals = [tx_arcmin.max(), tx_arcmin.min(), ty_arcmin.min(), ty_arcmin.max()] 
+# imshowのextentはセル中心ではなく外縁。配列の列順と座標の向きを合わせ、
+# Az軸の反転は軸側で行う（全体図・ズーム図で同じ座標を表示する）。
+extent_vals = [tx_arcmin.min() - SCAN_STEP_AZ / 2,
+               tx_arcmin.max() + SCAN_STEP_AZ / 2,
+               ty_arcmin.min() - SCAN_STEP_EL / 2,
+               ty_arcmin.max() + SCAN_STEP_EL / 2]
 
 # =========================
 # 複素ビームパターン (Linear & dB)
@@ -989,6 +1017,8 @@ axes[0].set_title("Complex Beam Pattern Amplitude"), axes[0].set_xlabel("Az offs
 im = axes[1].imshow(np.rad2deg(np.angle(beam_grid)), extent=extent_vals, cmap="twilight", origin='lower', aspect='auto')
 fig.colorbar(im, ax=axes[1], label="Phase [deg]")
 axes[1].set_title("Complex Beam Pattern Phase"), axes[1].set_xlabel("Az offset [arcmin]")
+for ax in axes:
+    ax.set_xlim(extent_vals[1], extent_vals[0])
 fig.tight_layout(), save_figure(fig, os.path.join(OUT_DIR, "beam_pattern.png"), dpi=150), plt.close(fig)
 
 peak_amp = np.nanmax(beam_grid_amp)
@@ -1012,6 +1042,7 @@ fig, ax = plt.subplots(figsize=(6, 5))
 im = ax.imshow(beam_grid_db, extent=extent_vals, cmap="inferno", vmin=DB_MIN, vmax=0, origin='lower', aspect='auto')
 fig.colorbar(im, ax=ax, label="Normalized Amplitude [dB]")
 ax.set_title("Beam Pattern (dB Scale)"), ax.set_xlabel("Az offset [arcmin]"), ax.set_ylabel("El offset [arcmin]")
+ax.set_xlim(extent_vals[1], extent_vals[0])
 fig.tight_layout(), save_figure(fig, os.path.join(OUT_DIR, "beam_pattern_dB.png"), dpi=150)
 if ZOOM_SIZE_ARCMIN is not None:
     zoom_half_width = ZOOM_SIZE_ARCMIN / 2.0
