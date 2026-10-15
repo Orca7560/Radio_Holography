@@ -2,8 +2,8 @@
 
 Examples:
 
-    python3 beam_analysis.py --workdir I26287YA --antenna 32 --scan-axis az
-    python3 beam_analysis.py --workdir I26287YA --antenna 34 --scan-axis el --scan-lag-ms 100
+    python3 beam_analysis.py --in I26287YA --antenna 32 --scan-axis az
+    python3 beam_analysis.py --in I26287YA --antenna 34 --scan-axis el --scan-lag-ms 100
 
 Required files: WORKDIR/step_cor/*.cor (already correlated), WORKDIR/*.xml,
 and WORKDIR/OBS_CODE32.prd or OBS_CODE34.prd. XML needs stream/label and
@@ -49,3 +49,6 @@ samples. ON phase calibration and 34 m phase sign inversion are not applied;
 Use --dry-run to inspect files/commands without running frinZ. The real
 frinZ must support --step and output one result row for each successive
 integration window; raw logs are saved for inspection.
+
+作業ディレクトリは --in DIR または --input DIR で指定する。
+旧 --workdir も互換用に使用可能。引数なしで全オプションと実行例を表示する。
