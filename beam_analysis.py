@@ -2,8 +2,8 @@
 """Re-integrate the central raster with frinZ and plot a small complex beam.
 
 Examples:
-  python3 beam_analysis.py --workdir I26287YA --antenna 32 --scan-axis az
-  python3 beam_analysis.py --workdir I26287YA --antenna 34 --scan-axis el \
+  python3 beam_analysis.py --in I26287YA --antenna 32 --scan-axis az
+  python3 beam_analysis.py --in I26287YA --antenna 34 --scan-axis el \
       --scan-lag-ms 100 --dry-run
 
 Uses observation XML files to identify offset correlation files and their start
@@ -257,7 +257,8 @@ def plot_map(rows, args, outdir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--workdir", type=Path, required=True, help="observation directory containing step_cor, XML and PRD")
+    parser.add_argument("--in", "--input", "--workdir", dest="workdir", type=Path, required=True,
+                        metavar="DIR", help="作業ディレクトリ（step_cor・XML・PRDを含む）。--workdirも互換用に使用可。")
     parser.add_argument("--antenna", type=int, choices=(32, 34), default=32, help="measurement antenna; selects PRD, does not flip input phases")
     parser.add_argument("--scan-axis", choices=("az", "el"), default="az")
     parser.add_argument("--prd", type=Path, help="explicit PRD path (relative to invocation directory)")
@@ -274,6 +275,11 @@ def main(argv=None):
     parser.add_argument("--db-min", type=float, default=-45)
     parser.add_argument("--frinz", default="frinZ", help="frinZ executable")
     parser.add_argument("--dry-run", action="store_true", help="select files and print commands without executing frinZ")
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        parser.print_help()
+        return 1
     args = parser.parse_args(argv)
     if "/" in args.frinz:
         args.frinz = str(Path(args.frinz).resolve())
