@@ -166,7 +166,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--center-on-peak", action="store_true",
-    help="全測定点の最大振幅点を原点に移す（ON点を含む）。既定は入力座標のまま解析・作図する。",
+    help="全測定点の最大振幅点を原点に移し（ON点を含む）、移動前のピーク座標と実際のAz/El移動量を表示する。既定は入力座標のまま解析・作図する。",
 )
 parser.add_argument(
     "--polar", action="store_true",
@@ -586,6 +586,19 @@ if AUTO_SPACE_ALIGN:
 Az_shifted = Az - az_offset
 El_shifted = El - el_offset
 
+# 実際に座標へ加えた移動量を、後段のガウスフィットとは独立に表示する。
+coordinate_shift_az = -az_offset
+coordinate_shift_el = -el_offset
+coordinate_shift_total = np.hypot(coordinate_shift_az, coordinate_shift_el)
+if AUTO_SPACE_ALIGN:
+    print(f"[INFO] 移動前の最大振幅点: Az={az_offset:+.3f}', El={el_offset:+.3f}'")
+    print("[INFO] --center-on-peak: 最大振幅点を原点へ移動しました。")
+print(f"[INFO] ビーム座標の移動量（移動後−移動前）: "
+      f"Az={coordinate_shift_az:+.3f}' ({coordinate_shift_az*60:+.1f} arcsec), "
+      f"El={coordinate_shift_el:+.3f}' ({coordinate_shift_el*60:+.1f} arcsec)")
+print(f"[INFO] ビーム座標の総移動量: {coordinate_shift_total:.3f}' "
+      f"({coordinate_shift_total*60:.1f} arcsec)")
+
 cross_shifted = El_shifted if args.scan_axis == "az" else Az_shifted
 _, cross_inverse = np.unique(np.round(cross_shifted, 2), return_inverse=True)
 is_even_scan = (cross_inverse % 2 == 1)
@@ -922,7 +935,6 @@ except (ValueError, RuntimeError) as exc:
 else:
     amplitude_fit, az0, el0, sigma_az, sigma_el, baseline_fit = fit_result["parameters"]
     center_offset = np.hypot(az0, el0)
-    print(f"適用したピーク基準の座標補正: Az={az_offset:+.3f}', El={el_offset:+.3f}'")
     residual_rms = fit_result["residual_rms_fraction"]
     print(f"補正後のメインビーム中心: Az={az0:+.3f}', El={el0:+.3f}' (原点から {center_offset:.3f}' = {center_offset*60:.1f} arcsec)")
     print(f"主ビーム内の振幅残差 RMS: {residual_rms:.4f} (最大振幅比 {100*residual_rms:.2f}%, {fit_result['n_cells']} セル)")
