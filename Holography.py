@@ -129,6 +129,18 @@ BEAM_FIT_USE_SNR_MASK = False
 # =========================
 # コマンドライン引数
 # =========================
+def parse_on_exclusion_time(value):
+    """入力Epochと同じDOY表記、または年月日表記の時刻を読む。"""
+    for fmt in ("%Y/%j %H:%M:%S.%f", "%Y/%j %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return pd.Timestamp(datetime.strptime(value, fmt))
+        except ValueError:
+            pass
+    raise argparse.ArgumentTypeError(
+        '時刻は "2026/184 08:26:01.000" または "2026-07-03 08:26:01" の形式で指定してください。')
+
+
 parser = argparse.ArgumentParser(
     prog=os.path.basename(sys.argv[0]),
     description=(
@@ -207,6 +219,12 @@ parser.add_argument(
 parser.add_argument(
     "--on-length", type=float, default=10.0, metavar="SEC",
     help="較正用ON点の積分時間 [s]（既定: 10）。中心座標かつLengthがこの時間と一致する点をONと判定する。",
+)
+parser.add_argument(
+    "--exclude-on-time", type=parse_on_exclusion_time, action="append", default=[], metavar="EPOCH",
+    help='指定したEpochの点を位相補正の基準から除外する（複数回指定可）。\n'
+         '例: --exclude-on-time "2026/184 08:26:01.000"\n'
+         'beam.txtのEpochと同じ時刻系・積分開始時刻を指定する。データ自体は削除しない。',
 )
 parser.add_argument(
     "--on-amp-min", type=float, default=None, metavar="AMP",
@@ -631,13 +649,23 @@ on_amplitude_label = "Amp閾値なし"
 if args.on_amp_min is not None:
     on_amplitude_mask = df["Amp"].to_numpy() >= args.on_amp_min
     on_amplitude_label = f"Amp >= {args.on_amp_min:g}"
-on_idx = np.flatnonzero(on_mask & on_amplitude_mask)
+on_exclusion_mask = np.zeros(len(df), dtype=bool)
+for excluded_time in dict.fromkeys(args.exclude_on_time):
+    matches = (df["Epoch"] == excluded_time).to_numpy()
+    candidates = matches & on_mask & on_amplitude_mask
+    on_exclusion_mask |= matches
+    if np.any(candidates):
+        print(f"[INFO] 位相補正の基準から除外: {excluded_time} ({np.count_nonzero(candidates)}点)")
+    else:
+        print(f"[WARN] --exclude-on-time {excluded_time}: 該当する採用候補のON点がありません。")
+on_selection_mask = on_mask & on_amplitude_mask & ~on_exclusion_mask
+on_idx = np.flatnonzero(on_selection_mask)
 print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
       f"{np.count_nonzero(stationary_on_mask)}点、{on_amplitude_label} の停止ON候補 "
-      f"{np.count_nonzero(stationary_on_mask & on_amplitude_mask)}点")
+      f"{np.count_nonzero(stationary_on_mask & on_selection_mask)}点（時刻指定の除外後）")
 if args.include_center_crossings:
     print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
-          f"{np.count_nonzero(on_mask & ~stationary_on_mask & on_amplitude_mask)}点、"
+          f"{np.count_nonzero(on_selection_mask & ~stationary_on_mask)}点、"
           f"合計 {len(on_idx)}点")
 E_corr = E.copy()
 
@@ -1869,6 +1897,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
