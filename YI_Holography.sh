@@ -73,6 +73,7 @@ SCAN_BAND=""          # --band-split 使用時に走査lag推定へ使う帯域�
 # Holography.py 用（スライス出力は既定で両方ON。--no-sliceで両方OFF）
 POLAR="false"
 EXCLUDE_CENTER_CROSSINGS="false"
+HOLOGRAPHY_ON_OPTS=()
 NO_SLICE="false"
 DB_MIN=""
 ZOOM_SIZE=""
@@ -103,6 +104,9 @@ corr_fringe.py 関連:
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
   --exclude-center-crossings   位相補正から中心通過点を除外（既定: 通過点も含む）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
+  --on-amp-min AMP            位相補正用ONの振幅下限（省略時は閾値なし）
+  --exclude-on-time EPOCH     指定EpochのONを位相補正の基準から除外（複数回指定可）
+                               例: --exclude-on-time "2026/184 08:21:23.00"
   --offset-scan-time SEC      OFF点の積分時間 [s]（既定: 0.5、ON積分時間は--on-length）
   --offset-step-time SEC      OFF点の積分開始刻み [s]（省略時は積分時間と同じ）
   --scan-half                 frinZのoffset走査で最初と最後の積分長を半分にする
@@ -178,6 +182,9 @@ while [[ $# -gt 0 ]]; do
         --on-length)
             [[ $# -ge 2 && "$2" != --* ]] || { echo "[ERROR] --on-length には秒数が必要です。" >&2; exit 1; }
             ON_LENGTH="$2"; shift 2 ;;
+        --on-amp-min|--exclude-on-time)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "[ERROR] $1 には値が必要です。" >&2; exit 1; }
+            HOLOGRAPHY_ON_OPTS+=("$1" "$2"); shift 2 ;;
         --offset-step-time)
             [[ $# -ge 2 && "$2" != --* ]] || { echo "[ERROR] --offset-step-time には秒数が必要です。" >&2; exit 1; }
             OFFSET_STEP_TIME="$2"; shift 2 ;;
@@ -319,6 +326,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 holography_opts=()
 holography_opts+=(--antenna "$ANTENNA")
 holography_opts+=(--on-length "$ON_LENGTH")
+holography_opts+=("${HOLOGRAPHY_ON_OPTS[@]}")
 [[ "$EXCLUDE_CENTER_CROSSINGS" == "true" ]] && holography_opts+=(--exclude-center-crossings)
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
@@ -457,3 +465,4 @@ echo
 echo "--- 全ステップが完了しました ---"
 echo "最終beam    : $BEAM_FINAL_FILE"
 echo "出力ディレクトリ: $OUTPUT_DIR"
+
