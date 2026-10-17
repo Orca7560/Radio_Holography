@@ -11,8 +11,8 @@ usage() {
   OBS_CODE                    観測コード（例: I26184Y、I26184YA、I26184YB）。YYDDD を観測日とする
 
 autoHolo.sh 固有:
-  --dat-day-offset DAYS       .datの日付 - 観測日の日数（既定: 2）
-                               2=観測日より2日後、0=同日、-2=2日前
+  --dat-day-offset DAYS       rawリンク対象の.dat日付 - 観測日の日数（既定: 2）
+                               2=観測日より2日後、0=同日、-2=2日前。scp対象の選択には使わない
 
 出力・入力（以下は YI_Holography.sh に渡す）:
   --antenna {32,34}           測定アンテナ径 [m]（既定: 32）。SKD/PRD選択と解析に使用
@@ -68,8 +68,9 @@ beam.txt の作成:
 
 処理の流れ:
   1. 解析サーバー（192.168.0.20）に観測コードのディレクトリを作成
-  2. IP61 の /mnt/raid から同じ時刻の S1/S2 .dat を照合して転送
-     scp -3 でゲート経由で 192.168.46.20 に転送する
+  2. IP61 の /mnt/raid/{OBS_CODE}_ymg1_*.dat を転送
+     転送対象はS番号・日付・tid・時刻で絞らず、観測コードで選ぶ
+     IP61 上の scp で 192.168.46.20 に直接転送する
   3. 192.168.0.20 で観測日 YYYYDOY の .raw リンクを作成し、解析サーバーの
      /mnt/yi_raid5/Holography/YI_Holography.sh を実行
 
@@ -124,7 +125,7 @@ while [[ $# -gt 0 ]]; do
 done
 YI_OPTS+=(--antenna "$ANTENNA")
 
-for program in ssh scp sshpass date; do
+for program in ssh sshpass date; do
     command -v "$program" >/dev/null || { echo "[ERROR] $program が必要です。" >&2; exit 1; }
 done
 
@@ -180,67 +181,71 @@ set -euo pipefail
 mkdir -p -- "$1/raw"
 REMOTE
 
-echo '=== 2. IP61 の S1/S2 ペアを検証して転送 ==='
-# S1/S2をIP61で照合し、ゲートからscp -3で転送する。
-# IP61から解析サーバーへの直接SSHは使用しない。
-DAT_FILE_LIST=$(remote_bash "$SOURCE_HOST" "$OBS_CODE" "$DAT_DAY" <<'REMOTE'
+echo '=== 2. 観測コードの .dat を転送 ==='
+# IP61上の古いscpでも動くよう、ローカルファイル→転送先の通常scpを使う。
+# パスワードはSSHの標準入力で送り、コマンド文字列や一時ファイルには書かない。
+transfer_from_source() (
+    local transfer_script quoted_script quoted_destination quoted_obs_code control_dir control_socket
+    control_dir=$(mktemp -d)
+    control_socket="$control_dir/source.sock"
+    cleanup_source_connection() {
+        ssh -S "$control_socket" -O exit "$SOURCE_HOST" >/dev/null 2>&1 || true
+        rm -rf -- "$control_dir"
+    }
+    trap cleanup_source_connection EXIT
+    # Authenticate only the source connection under sshpass. Transfer commands
+    # reuse it without sshpass monitoring the destination password prompt.
+    sshpass -e ssh -M -S "$control_socket" -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=6 -fNT "$SOURCE_HOST" || exit "$?"
+    transfer_script=$(cat <<'TRANSFER'
 set -euo pipefail
-obs_code=$1
-dat_day=$2
+destination=$1
+obs_code=$2
+command -v scp >/dev/null || { echo '[ERROR] IP61にscpが必要です。' >&2; exit 1; }
+IFS= read -r AUTOHOLO_SSH_PASSWORD
+export AUTOHOLO_SSH_PASSWORD
 shopt -s nullglob
-s1_files=(/mnt/raid/"${obs_code}"_ymg1_S1_tid01-"${dat_day}"-*.dat)
-s2_files=(/mnt/raid/"${obs_code}"_ymg1_S2_tid02-"${dat_day}"-*.dat)
-if (( ${#s1_files[@]} == 0 || ${#s2_files[@]} == 0 )); then
-    echo "[ERROR] $obs_code / $dat_day の S1/S2 の両方が必要です。" >&2
+files=(/mnt/raid/"${obs_code}"_ymg1_*.dat)
+if (( ${#files[@]} == 0 )); then
+    echo "[ERROR] /mnt/raid/${obs_code}_ymg1_*.dat がありません。" >&2
     exit 1
 fi
-
-declare -A s1_by_time=() s2_by_time=()
-for file in "${s1_files[@]}"; do
-    name=${file##*/}
-    if [[ $name =~ ^${obs_code}_ymg1_S1_tid01-${dat_day}-([0-9]{6})\.dat$ ]]; then
-        s1_by_time[${BASH_REMATCH[1]}]=$file
-    else
-        echo "[ERROR] 未対応の S1 ファイル名: $name" >&2
-        exit 1
-    fi
-done
-for file in "${s2_files[@]}"; do
-    name=${file##*/}
-    if [[ $name =~ ^${obs_code}_ymg1_S2_tid02-${dat_day}-([0-9]{6})\.dat$ ]]; then
-        s2_by_time[${BASH_REMATCH[1]}]=$file
-    else
-        echo "[ERROR] 未対応の S2 ファイル名: $name" >&2
-        exit 1
-    fi
-done
-for time in "${!s1_by_time[@]}"; do
-    if [[ -z ${s2_by_time[$time]+x} ]]; then
-        echo "[ERROR] S1 ${time} に対応する S2 がありません。" >&2
-        exit 1
-    fi
-done
-for time in "${!s2_by_time[@]}"; do
-    if [[ -z ${s1_by_time[$time]+x} ]]; then
-        echo "[ERROR] S2 ${time} に対応する S1 がありません。" >&2
-        exit 1
-    fi
-done
-
-echo "${#s1_files[@]} 組の .dat をscpで転送します。" >&2
-printf '%s\n' "${s1_files[@]}" "${s2_files[@]}"
-REMOTE
+askpass=$(mktemp)
+trap 'rm -f -- "$askpass"; unset AUTOHOLO_SSH_PASSWORD' EXIT
+cat > "$askpass" <<'ASKPASS'
+#!/bin/sh
+printf '%s\n' "$AUTOHOLO_SSH_PASSWORD"
+ASKPASS
+chmod 700 "$askpass"
+export SSH_ASKPASS="$askpass"
+export SSH_ASKPASS_REQUIRE=force
+export DISPLAY=autoHolo:0
+# -TのSSHセッションには制御端末がないため、古いSSHでもASKPASSを使用する。
+echo "[INFO] scp開始: ${#files[@]} ファイル" >&2
+if scp -o BatchMode=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+        -- /mnt/raid/"${obs_code}"_ymg1_*.dat "$destination" </dev/null; then
+    echo '[INFO] scp完了: 全ファイル' >&2
+else
+    status=$?
+    echo "[ERROR] scp失敗 (終了コード=$status)" >&2
+    exit "$status"
+fi
+TRANSFER
 )
-SCP_SOURCES=()
-while IFS= read -r file; do
-    [[ -n $file ]] && SCP_SOURCES+=("$SOURCE_HOST:$file")
-done <<< "$DAT_FILE_LIST"
-if (( ${#SCP_SOURCES[@]} == 0 )); then
-    echo '[ERROR] 転送対象の .dat がありません。' >&2
-    exit 1
+    printf -v quoted_script '%q' "$transfer_script"
+    printf -v quoted_destination '%q' "$TRANSFER_HOST:$TARGET_DIR/"
+    printf -v quoted_obs_code '%q' "$OBS_CODE"
+    printf '%s\n' "$SSHPASS" | \
+        ssh -S "$control_socket" -o BatchMode=yes -T "$SOURCE_HOST" "bash -c $quoted_script -- $quoted_destination $quoted_obs_code"
+)
+if transfer_from_source; then
+    :
+else
+    status=$?
+    echo "[ERROR] IP61の転送処理が終了しました (SSH/転送終了コード=$status)。上のscp開始・完了・失敗表示を確認してください。" >&2
+    exit "$status"
 fi
-sshpass -e scp -3 -o BatchMode=no -- "${SCP_SOURCES[@]}" "$TRANSFER_HOST:$TARGET_DIR/"
-echo 'S1/S2 の転送が完了しました。'
+echo '.dat の転送が完了しました。'
 
 echo '=== 3. 観測日の .raw リンクを作り YI_Holography.sh を実行 ==='
 remote_bash "$ANALYSIS_HOST" "$OBS_CODE" "$OBS_DAY" "$DAT_DAY" "$HOLO_DIR" "${YI_OPTS[@]}" <<'REMOTE'
@@ -308,3 +313,4 @@ bash YI_Holography.sh "$obs_code" "$@"
 REMOTE
 
 echo '転送と解析が完了しました。'
+
