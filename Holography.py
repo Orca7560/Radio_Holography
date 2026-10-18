@@ -31,6 +31,9 @@ SAVE_POLAR_NPZ = True
 import os
 import sys
 import argparse
+import json
+from holography_mc import (calibrate_phase, grid_layout, average_grid, aperture_from_beam,
+                           correct_aperture_phase, remove_phase_tilt, noise_sigmas, run_monte_carlo)
 import errno
 import tempfile
 from io import BytesIO
@@ -159,6 +162,7 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input beam.txt --output output --center-on-peak\n"
         "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n"
         "  python Holography.py --input beam.txt --output output --on-amp-min 0.4\n\n"
+        "  python Holography.py --in beam.txt --out output --mc-trials 300 --mc-seed 42\n\n"
         "--input と --output は必須です。\n"
         "各図をPNGとPDFで保存します。PDFはoutput/pdf/以下にまとめます。"
     ),
@@ -239,11 +243,23 @@ parser.add_argument(
     help="採用した全ON点位相を時刻に対して一本の直線で最小二乗近似し、\n"
          "その位相を全測定点から差し引く。未指定時はON点間を線形補間する。",
 )
+parser.add_argument(
+    "--mc-trials", type=int, default=0, metavar="N",
+    help="熱雑音のモンテカルロ試行回数（既定: 0=実行しない、実行時は2以上。例: 300）。",
+)
+parser.add_argument(
+    "--mc-seed", type=int, default=None, metavar="SEED",
+    help="モンテカルロ乱数のシード（0以上の整数）。同じ入力・設定・シードで再現可能。",
+)
 if len(sys.argv) == 1:
     parser.print_help()
     sys.exit(1)
 
 args = parser.parse_args()
+if args.mc_trials != 0 and args.mc_trials < 2:
+    parser.error("--mc-trials は0（無効）または2以上にしてください。")
+if args.mc_seed is not None and args.mc_seed < 0:
+    parser.error("--mc-seed は0以上にしてください。")
 
 if args.on_amp_min is not None and (not np.isfinite(args.on_amp_min) or args.on_amp_min < 0):
     parser.error("--on-amp-min は有限の0以上の値にしてください。")
@@ -669,26 +685,19 @@ if args.include_center_crossings:
           f"合計 {len(on_idx)}点")
 E_corr = E.copy()
 
-phase_reference = None
+# 通常解析とMCで同じON補正関数を使用する。
+E_corr, phase_reference, phase_slope = calibrate_phase(E, times_sec, on_idx, ON_PHASE_LINEAR_FIT)
 reference_label = "ON linear interpolation (correction)"
-if len(on_idx) >= 2:
-    on_phases = np.unwrap(np.angle(E[on_idx]))
-    if ON_PHASE_LINEAR_FIT:
-        fit_time = times_sec[on_idx] - times_sec[on_idx[0]]
-        if np.unique(fit_time).size < 2:
-            raise ValueError("--on-phase-linear-fit には時刻の異なるON点が2点以上必要です。")
-        slope, intercept = np.polyfit(fit_time, on_phases, 1)
-        phase_reference = slope * (times_sec - times_sec[on_idx[0]]) + intercept
-        reference_label = "All ON points: linear fit (correction)"
-        print(f"[INFO] {on_amplitude_label} のON点 {len(on_idx)} 点から位相を直線近似: "
-              f"{np.rad2deg(slope) * 3600:+.3f} deg/hour")
-    else:
-        phase_reference = np.interp(times_sec, times_sec[on_idx], on_phases)
-    E_corr *= np.exp(-1j * phase_reference)
-else:
-    if ON_PHASE_LINEAR_FIT:
-        raise ValueError(f"--on-phase-linear-fit には {on_amplitude_label} のON点が2点以上必要です。")
+if phase_reference is not None and ON_PHASE_LINEAR_FIT:
+    reference_label = "All ON points: linear fit (correction)"
+    print(f"[INFO] {on_amplitude_label} のON点 {len(on_idx)} 点から位相を直線近似: "
+          f"{np.rad2deg(phase_slope) * 3600:+.3f} deg/hour")
+if phase_reference is None:
     print(f"[WARN] 位相補正に使えるON点 ({on_amplitude_label}) が{len(on_idx)}点のため、補正しません。")
+# MCは位相補正・座標範囲の選別前の全測定点から始める。
+mc_input_field = E.copy() if args.mc_trials else None
+mc_input_times = times_sec.copy() if args.mc_trials else None
+measurement_indices = np.arange(len(E))
 
 # 全測定点を薄い灰色で表示し、実際に位相補正に使ったONを黒い三角で重ねる。
 # 白黒印刷でも、中心通過点と較正用ONをマーカーの形で区別できる。
@@ -751,6 +760,7 @@ print(f"[INFO] ビーム座標の総移動量: {np.hypot(az_offset, el_offset):.
 
 if OFFSET_LIMIT_ARCMIN is not None:
     limit_mask = (np.abs(Az_shifted) <= OFFSET_LIMIT_ARCMIN) & (np.abs(El_shifted) <= OFFSET_LIMIT_ARCMIN)
+    measurement_indices = measurement_indices[limit_mask]
     raster_mask = raster_mask[limit_mask]
     Az, El, Az_shifted, El_shifted, E_corr, SNR, times_sec = Az[limit_mask], El[limit_mask], Az_shifted[limit_mask], El_shifted[limit_mask], E_corr[limit_mask], SNR[limit_mask], times_sec[limit_mask]
 
@@ -766,6 +776,7 @@ elif np.sum(is_center) > 1:
         if np.sum(is_scan) > 0:
             valid_scan_mask[np.where(is_center)[0][np.argmin(np.abs(times_sec[np.where(is_center)[0]] - np.mean(times_sec[is_scan])))]] = True
 
+measurement_indices = measurement_indices[valid_scan_mask]
 Az_orig = Az[valid_scan_mask]
 El_orig = El[valid_scan_mask]
 
@@ -911,28 +922,12 @@ tx = tx_arcmin * arcmin_to_rad
 ty = ty_arcmin * arcmin_to_rad
 nx, ny = len(tx), len(ty)
 
-beam_grid_sum, snr_grid_sum, count_grid = np.zeros((ny, nx), dtype=complex), np.zeros((ny, nx), dtype=float), np.zeros((ny, nx), dtype=int)
-
-for i in range(len(Az)):
-    ix, iy = np.argmin(np.abs(tx_arcmin - Az[i])), np.argmin(np.abs(ty_arcmin - El[i]))
-    beam_grid_sum[iy, ix] += E_corr[i]
-    snr_grid_sum[iy, ix]  += SNR[i]
-    count_grid[iy, ix]    += 1
-
+# 通常解析・MCで同一の格子平均とnearest欠損補間を使う。
+mc_layout = grid_layout(Az, El, tx_arcmin, ty_arcmin)
+count_grid = mc_layout[1]
 valid_cells = count_grid > 0
-beam_grid, snr_grid = np.zeros((ny, nx), dtype=complex), np.full((ny, nx), np.nan)
-beam_grid[valid_cells] = beam_grid_sum[valid_cells] / count_grid[valid_cells]
-snr_grid[valid_cells]  = snr_grid_sum[valid_cells] / count_grid[valid_cells]
-
-# 比較用: 観測されたセルだけを平均し、欠損セルは 0 のままにする。
-# ON補正・座標合わせ・格子化は通常の beam_grid と共通。
-beam_grid_raw = beam_grid.copy()
-
-if np.any(~valid_cells):
-    Y_valid, X_valid = np.where(valid_cells)
-    Y_all, X_all = np.mgrid[0:ny, 0:nx]
-    beam_grid = griddata((Y_valid, X_valid), beam_grid[valid_cells], (Y_all, X_all), method='nearest')
-    snr_grid = griddata((Y_valid, X_valid), snr_grid[valid_cells], (Y_all, X_all), method='nearest')
+beam_grid, beam_grid_raw = average_grid(E_corr, mc_layout)
+snr_grid, _ = average_grid(SNR, mc_layout)
 
 beam_grid_amp = np.abs(beam_grid)
 
@@ -1180,7 +1175,7 @@ plt.close(fig)
 # =========================
 # FFT -> 開口面電場分布
 # =========================
-aperture = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(beam_grid)))
+aperture = aperture_from_beam(beam_grid)
 aperture_raw = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(beam_grid_raw)))
 
 dtheta_x, dtheta_y = np.mean(np.diff(tx)), np.mean(np.diff(ty))
@@ -1277,9 +1272,7 @@ print(f"[INFO] IFFT comparison: {np.count_nonzero(valid_cells)}/{valid_cells.siz
 # 位相処理 (180度補正機能)
 # =========================
 phase_raw = np.angle(aperture)
-threshold, shift_val = np.deg2rad(135), np.deg2rad(180)
-phase_corrected = np.where(phase_raw > threshold, phase_raw - shift_val, phase_raw)
-phase_corrected = np.where(phase_corrected < -threshold, phase_corrected + shift_val, phase_corrected)
+phase_corrected = correct_aperture_phase(aperture)
 phase_unwrapped = phase_corrected
 
 # =========================
@@ -1290,11 +1283,7 @@ fit_mask = mask & (R >= FIT_RADIUS_MIN) & (R <= FIT_RADIUS_MAX)
 if np.sum(fit_mask) < 10:
     raise ValueError(f"半径{FIT_RADIUS_MIN:g}–{FIT_RADIUS_MAX:g} mに位相傾斜のフィットに必要な画素がありません。")
 
-Xf_tilt, Yf_tilt, Zf_tilt = X[fit_mask].flatten(), Y[fit_mask].flatten(), phase_unwrapped[fit_mask].flatten()
-A_tilt = np.c_[Xf_tilt, Yf_tilt, np.ones_like(Xf_tilt)]
-C_tilt, _, _, _ = np.linalg.lstsq(A_tilt, Zf_tilt, rcond=None)
-plane = C_tilt[0]*X + C_tilt[1]*Y + C_tilt[2]
-phase_tilt_only = phase_unwrapped - plane
+phase_tilt_only, plane, C_tilt = remove_phase_tilt(phase_unwrapped, X, Y, fit_mask)
 
 # =========================
 # 鏡面マップ（振幅・位相）: 補正後(wrapped)版
@@ -1555,6 +1544,130 @@ full_aperture_out_path = save_figure(
 plt.close(fig)
 print(f"[INFO] 中心のみマスクした鏡面誤差図（円なし）: {full_aperture_no_circle_path}")
 print(f"[INFO] 中心のみマスクした鏡面誤差図（円あり）: {full_aperture_out_path}")
+
+# =========================
+# SNR由来の熱雑音による測定値の不確かさ
+# =========================
+if args.mc_trials:
+    mc_seed = args.mc_seed if args.mc_seed is not None else int(np.random.SeedSequence().entropy)
+    mc_dir = os.path.join(OUT_DIR, "monte_carlo")
+    os.makedirs(mc_dir, exist_ok=True)
+    # Noise is needed only for map points or phase-reference points.
+    used_indices = np.union1d(measurement_indices, on_idx)
+    mc_sigma = np.zeros(len(mc_input_field))
+    sigma_used, imputed = noise_sigmas(
+        df["Amp"].to_numpy()[used_indices], df["SNR"].to_numpy()[used_indices],
+        df["Length"].to_numpy()[used_indices])
+    mc_sigma[used_indices] = sigma_used
+    starts = mc_input_times[used_indices]
+    ends = starts + df["Length"].to_numpy()[used_indices]
+    overlap_count = int(np.count_nonzero(starts[1:] < np.maximum.accumulate(ends)[:-1] - 1e-6))
+    if overlap_count:
+        print(f"[WARN] MC: 積分区間の重なる点が{overlap_count}点あります。"
+              "このMCは測定点間の独立雑音を仮定し、重複積分による雑音相関は含みません。")
+    noise_table = df.iloc[used_indices][["Epoch", "Length", "Amp", "SNR"]].copy()
+    noise_table["sigma_per_quadrature"] = sigma_used
+    noise_table["sigma_imputed"] = imputed
+    noise_table["used_as_on"] = np.isin(used_indices, on_idx)
+    noise_table.to_csv(os.path.join(mc_dir, "noise_sigma.csv"), index=False)
+    if np.any(imputed):
+        print(f"[WARN] MC: A/SNRを算出できない{np.count_nonzero(imputed)}点は、同じLengthの"
+              "有効点の雑音中央値で補いました。noise_sigma.csvを参照してください。")
+    print(f"[MC] {args.mc_trials} trials; independent real/imaginary noise sigma=A/SNR; "
+          f"ON reference refitted each trial; seed={mc_seed}", flush=True)
+    print("[MC] 座標・ピーク移動量・ON採用点・RMSマスクは通常解析の値に固定します。", flush=True)
+    def mc_progress(done, total):
+        if done == 1 or done == total or done % max(1, total // 10) == 0:
+            print(f"[MC] {done}/{total}", flush=True)
+    mc = run_monte_carlo(
+        mc_input_field, mc_sigma, mc_input_times, on_idx, measurement_indices, mc_layout,
+        X, Y, fit_mask, (surface_full_aperture_mask, surface_rms_mask), wavelength,
+        args.mc_trials, mc_seed, ON_PHASE_LINEAR_FIT, mc_progress)
+    # Guard against accidental divergence between the nominal and MC pipelines.
+    if not np.allclose(mc["nominal_aperture"], aperture, rtol=1e-12, atol=1e-14):
+        raise RuntimeError("通常解析とMCの基準開口面が一致しません。")
+    mc_factor = wavelength * 1000 / (4 * np.pi)
+    mc["tilt_phase_std_rad"] = mc["surface_std_mm"] / mc_factor
+    mc["nominal_surface_mm"] = surface_tilt_mm
+    mc["x_m"], mc["y_m"] = x, y
+    mc["full_aperture_rms_mask"] = surface_full_aperture_mask
+    mc["annulus_rms_mask"] = surface_rms_mask
+    np.savez_compressed(os.path.join(mc_dir, "uncertainty_maps.npz"), **mc)
+    pd.DataFrame({"trial": np.arange(1, args.mc_trials + 1),
+                  "full_aperture_rms_mm": mc["rms_trials_mm"][:, 0],
+                  "annulus_rms_mm": mc["rms_trials_mm"][:, 1]}).to_csv(
+                      os.path.join(mc_dir, "rms_trials.csv"), index=False)
+    summary = dict(trials=args.mc_trials, seed=mc_seed, numpy_version=np.__version__, antenna_m=D,
+                   wavelength_m=wavelength, input_file=os.path.abspath(BEAM_FILE),
+                   scope="Thermal-noise propagation conditional on fixed geometry and ON selection; observed data used as signal estimate.",
+                   on_phase_method="linear_fit" if ON_PHASE_LINEAR_FIT else "interpolation",
+                   on_count=len(on_idx), on_amp_min=args.on_amp_min,
+                   exclude_on_time=[str(t) for t in args.exclude_on_time],
+                   include_center_crossings=args.include_center_crossings,
+                   center_on_peak=args.center_on_peak,
+                   coordinate_shift_arcmin=dict(az=-az_offset, el=-el_offset),
+                   scan_width_arcmin=OFFSET_LIMIT_ARCMIN, scan_axis=args.scan_axis,
+                   center_block_size_m=CENTER_BLOCK_SIZE_M,
+                   fit_radius_m=[FIT_RADIUS_MIN, FIT_RADIUS_MAX],
+                   rms_annulus_radius_m=[SURFACE_RMS_RADIUS_MIN_M, SURFACE_RMS_RADIUS_MAX_M],
+                   imputed_sigma_count=int(np.count_nonzero(imputed)),
+                   overlapping_integration_count=overlap_count,
+                   independent_measurement_noise=True)
+    for column, name, nominal in ((0, "full_aperture", rms_full_aperture_tilt),
+                                  (1, "annulus", rms_annulus_tilt)):
+        values = mc["rms_trials_mm"][:, column]
+        summary[name] = dict(nominal_mm=float(nominal), mean_mm=float(values.mean()),
+                             std_mm=float(values.std(ddof=1)),
+                             p16_mm=float(np.percentile(values, 16)), p84_mm=float(np.percentile(values, 84)),
+                             pixels=int(np.count_nonzero((surface_full_aperture_mask, surface_rms_mask)[column])))
+        print(f"[MC] {name}: nominal RMS={nominal:.4f} mm; "
+              f"trial SD={values.std(ddof=1):.4f} mm; "
+              f"16–84%=[{np.percentile(values,16):.4f}, {np.percentile(values,84):.4f}] mm")
+    summary["surface_pixel_uncertainty_rms_mm"] = float(np.sqrt(np.mean(
+        mc["surface_std_mm"][surface_full_aperture_mask] ** 2)))
+    branch_mask = mc["phase_branch_change_fraction"] > 0
+    summary["phase_branch_unstable_pixels_in_aperture"] = int(np.count_nonzero(branch_mask & mask))
+    if np.any(branch_mask & mask):
+        print("[WARN] MC: 開口内で従来の±135度位相補正の分岐をまたぐ画素があります。"
+              "phase_branch_change_fractionを確認してください。")
+    with open(os.path.join(mc_dir, "summary.json"), "w", encoding="utf-8") as stream:
+        json.dump(summary, stream, ensure_ascii=False, indent=2)
+    pixel_table = pd.DataFrame({
+        "x_m": X.ravel(), "y_m": Y.ravel(),
+        "amplitude_std": mc["amplitude_std"].ravel(),
+        "raw_phase_circular_std_deg": np.rad2deg(mc["raw_phase_circular_std_rad"]).ravel(),
+        "tilt_phase_std_deg": np.rad2deg(mc["tilt_phase_std_rad"]).ravel(),
+        "surface_std_mm": mc["surface_std_mm"].ravel(),
+        "surface_p16_mm": mc["surface_p16_mm"].ravel(),
+        "surface_p84_mm": mc["surface_p84_mm"].ravel(),
+        "phase_branch_change_fraction": mc["phase_branch_change_fraction"].ravel(),
+        "full_aperture_rms_mask": surface_full_aperture_mask.ravel(),
+        "annulus_rms_mask": surface_rms_mask.ravel()})
+    pixel_table.to_csv(os.path.join(mc_dir, "pixel_uncertainty.csv"), index=False)
+    for name, values, label in (
+        ("aperture_amplitude_std", mc["amplitude_std"], "Amplitude SD"),
+        ("aperture_raw_phase_std", np.rad2deg(mc["raw_phase_circular_std_rad"]), "Raw phase circular SD [deg]"),
+        ("aperture_tilt_phase_std", np.rad2deg(mc["tilt_phase_std_rad"]), "Tilt-removed phase SD [deg]"),
+        ("surface_error_std", mc["surface_std_mm"], "Surface error SD [mm]"),
+        ("surface_error_std_aperture", np.where(surface_full_aperture_mask, mc["surface_std_mm"], np.nan), "Surface error SD [mm]"),
+        ("phase_branch_change_fraction", mc["phase_branch_change_fraction"], "Phase branch change fraction"),
+    ):
+        fig, ax = plt.subplots(figsize=(8, 7))
+        im = ax.imshow(values, extent=extent_ap, origin="lower", cmap="viridis", vmin=0)
+        fig.colorbar(im, ax=ax, label=label)
+        ax.set(xlabel="x [m]", ylabel="y [m]", xlim=(-20, 20), ylim=(-20, 20))
+        format_aperture_axes(ax)
+        save_figure(fig, os.path.join(mc_dir, name + ".png"), dpi=150)
+        plt.close(fig)
+    fig, axes = plt.subplots(2, 1, figsize=(8, 8))
+    for column, ax, nominal in ((0, axes[0], rms_full_aperture_tilt), (1, axes[1], rms_annulus_tilt)):
+        ax.hist(mc["rms_trials_mm"][:, column], bins="auto", color="0.7", edgecolor="black")
+        ax.axvline(nominal, color="black", linestyle="-")
+        ax.set(xlabel=("Full-aperture RMS [mm]" if column == 0 else "2–12 m RMS [mm]"), ylabel="Trials")
+    fig.tight_layout()
+    save_figure(fig, os.path.join(mc_dir, "rms_distribution.png"), dpi=150)
+    plt.close(fig)
+    print(f"[MC] Results: {mc_dir}")
 
 # =========================
 # ★ 低S/Nデータが鏡面に与える影響の定量評価（差分評価）
@@ -1897,6 +2010,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 

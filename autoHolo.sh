@@ -24,6 +24,9 @@ autoHolo.sh 固有:
   --band-split N              8192–8704 MHz をN分割（512の約数）
   --exclude-center-crossings   位相補正から中心通過点を除外（既定: 通過点も含む）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
+  --on-amp-min AMP            位相補正用ONの振幅下限（省略時は閾値なし）
+  --exclude-on-time EPOCH     指定EpochのONを位相補正の基準から除外（複数回指定可）
+                               例: --exclude-on-time "2026/184 08:21:23.00"
   --offset-scan-time SEC      OFF点の積分時間 [s]（既定: 0.5、ON積分時間は--on-length）
   --offset-step-time SEC      OFF点の積分開始刻み [s]（省略時は積分時間と同じ）
   --scan-half                 端点を半分積分にする。開始刻み指定時は先頭が刻みの半分
@@ -50,6 +53,8 @@ beam.txt の作成:
   --invert-lag-sign           推定ラグの符号を反転してfrinZへ渡す
 
 ホログラフィ解析:
+  --mc-trials N               熱雑音MCの試行回数（既定: 0=無効、例: 300）
+  --mc-seed SEED              MC乱数シード（0以上。再現確認用）
   --polar                     開口面の極座標表示を追加
   --no-slice                  ビーム・開口面のスライス出力を抑制
   --db-min DB                 dB表示の下限
@@ -313,4 +318,5 @@ bash YI_Holography.sh "$obs_code" "$@"
 REMOTE
 
 echo '転送と解析が完了しました。'
+
 
