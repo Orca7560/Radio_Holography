@@ -51,6 +51,7 @@ SCAN_HALF="false"
 OFFSET_SCAN_TIME="0.5"
 OFFSET_STEP_TIME=""
 ON_LENGTH="10"
+RFI=""
 FORWARD_DIRECTION="increasing"
 SCAN_AXIS="az"
 EL_DRIVE_SPEED=""
@@ -105,6 +106,7 @@ corr_fringe.py 関連:
   --band-split N               8192-8704MHzをN分割して処理（512の約数）
   --exclude-center-crossings   位相補正から中心通過点を除外（既定: 通過点も含む）
   --on-length SEC             ON判定・ON積分・Holography較正用ONのLength [s]（既定: 10）
+  --rfi CHANNELS              frinZのRFIカット指定（例: 0,256）。初回・lag補正後の両方に適用
   --on-amp-min AMP            位相補正用ONの振幅下限（省略時は閾値なし）
   --exclude-on-time EPOCH     指定EpochのONを位相補正の基準から除外（複数回指定可）
                                例: --exclude-on-time "2026/184 08:21:23.00"
@@ -183,6 +185,9 @@ while [[ $# -gt 0 ]]; do
         --on-length)
             [[ $# -ge 2 && "$2" != --* ]] || { echo "[ERROR] --on-length には秒数が必要です。" >&2; exit 1; }
             ON_LENGTH="$2"; shift 2 ;;
+        --rfi)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "[ERROR] --rfi には値が必要です（例: 0,256）。" >&2; exit 1; }
+            RFI="$2"; shift 2 ;;
         --on-amp-min|--exclude-on-time)
             [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "[ERROR] $1 には値が必要です。" >&2; exit 1; }
             HOLOGRAPHY_ON_OPTS+=("$1" "$2"); shift 2 ;;
@@ -298,6 +303,7 @@ corr_fringe_corr_opts=()
 
 # corr_fringe.py --only-frinZ（frinZ実行）に共通で渡すオプション
 corr_fringe_common_opts=(--offset-scan-time "$OFFSET_SCAN_TIME" --on-length "$ON_LENGTH")
+[[ -n "$RFI" ]] && corr_fringe_common_opts+=(--rfi "$RFI")
 [[ -n "$OFFSET_STEP_TIME" ]] && corr_fringe_common_opts+=(--offset-step-time "$OFFSET_STEP_TIME")
 [[ -n "$CPU" ]] && corr_fringe_common_opts+=(--cpu "$CPU")
 [[ -n "$BAND_SPLIT" ]] && corr_fringe_common_opts+=(--band-split "$BAND_SPLIT")
@@ -470,4 +476,5 @@ echo
 echo "--- 全ステップが完了しました ---"
 echo "最終beam    : $BEAM_FINAL_FILE"
 echo "出力ディレクトリ: $OUTPUT_DIR"
+
 
