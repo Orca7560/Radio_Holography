@@ -335,9 +335,15 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 # スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
 holography_opts=()
 holography_opts+=(--antenna "$ANTENNA")
-holography_opts+=("${HOLOGRAPHY_MC_OPTS[@]}")
+# Bash 4.3以前のset -uでは、初期化済みでも空配列の[@]展開が失敗する。
+# 要素が存在する場合だけ展開し、未指定時は引数を追加しない。
+if [[ -n ${HOLOGRAPHY_MC_OPTS[0]+set} ]]; then
+    holography_opts+=("${HOLOGRAPHY_MC_OPTS[@]}")
+fi
 holography_opts+=(--on-length "$ON_LENGTH")
-holography_opts+=("${HOLOGRAPHY_ON_OPTS[@]}")
+if [[ -n ${HOLOGRAPHY_ON_OPTS[0]+set} ]]; then
+    holography_opts+=("${HOLOGRAPHY_ON_OPTS[@]}")
+fi
 [[ "$EXCLUDE_CENTER_CROSSINGS" == "true" ]] && holography_opts+=(--exclude-center-crossings)
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
@@ -476,5 +482,6 @@ echo
 echo "--- 全ステップが完了しました ---"
 echo "最終beam    : $BEAM_FINAL_FILE"
 echo "出力ディレクトリ: $OUTPUT_DIR"
+
 
 
