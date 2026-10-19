@@ -415,8 +415,10 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                      scan_positions=None, forward_direction="increasing",
                      scan_lag_increasing_ms=None, scan_lag_decreasing_ms=None,
                      scan_axis="az", offset_scan_time=0.5, on_length=DEFAULT_ON_LENGTH,
-                     offset_step_time=None):
+                     offset_step_time=None, rfi=None):
     """fringeまたはfrinZの処理を実行し、結果を整形・保存する。"""
+    if rfi is not None and processor != "frinZ":
+        raise ValueError("--rfi はfrinZ処理でのみ使用できます。")
     if not math.isfinite(offset_scan_time) or not 0 < offset_scan_time <= scan_time:
         raise ValueError(f"offsetスキャン積分時間は0より大きく{scan_time}秒以下にしてください。")
     if not math.isfinite(on_length) or on_length <= 0 or round(output * on_length) < 1:
@@ -582,6 +584,8 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                             command = ["fringe", "--in", cor_file]
                         else:
                             command = ["frinZ", "--in", cor_file]
+                            if rfi is not None:
+                                command.extend(["--rfi", rfi])
                             
                         command.extend(["--length", str(int_length), "--skip", str(int_skip)])
                         
@@ -631,6 +635,7 @@ def main():
             "実行例:\n"
             "  python corr_fringe.py I25231Y --only-frinZ --on-length 10 --offset-scan-time 0.5\n"
             "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 1.0\n"
+            "  python corr_fringe.py I25231Y --only-frinZ --rfi 0,256\n"
             "  python corr_fringe.py I25231Y --only-frinZ --offset-scan-time 0.5 --offset-step-time 0.125 --scan-half\n"
             "  python corr_fringe_v6.py I25231Y --only-corr\n"
             "  python corr_fringe_v6.py I25231Y --only-fringe\n"
@@ -665,6 +670,8 @@ def main():
     parser.add_argument("--offset-step-time", type=float, default=None, metavar="SEC",
                         help="offset積分の開始時刻の刻み [s]。既定は--offset-scan-timeと同じ。積分時間以下で指定。--scan-halfと併用可。ON積分は変更しない。")
     parser.add_argument("--cpu", type=int, help="gico3実行時のCPUコア数 (例: --cpu 10)")
+    parser.add_argument("--rfi", metavar="CHANNELS",
+                        help="frinZに --rfi CHANNELS としてそのまま渡すRFIカット指定（例: --rfi 0,256）。--only-frinZ / --only-frinZ-freq用。")
     parser.add_argument(
         "--scan-half", action="store_true",
         help="frinZのoffset走査の先頭・末尾を半分積分にする。--offset-step-time併用時、先頭は開始刻みの半分、末尾は積分時間の半分。先頭は切り捨て、末尾は切り上げ。未併用時は従来の端点処理。"
@@ -696,6 +703,11 @@ def main():
         parser.print_help()
         sys.exit(1)
     args = parser.parse_args()
+    if args.rfi is not None:
+        if not args.rfi.strip():
+            parser.error("--rfi にはRFIカット指定が必要です（例: 0,256）。")
+        if not (args.only_frinZ or args.only_frinZ_freq):
+            parser.error("--rfi は --only-frinZ または --only-frinZ-freq と併用してください。")
     if not math.isfinite(args.offset_scan_time) or not 0 < args.offset_scan_time <= scan_time:
         parser.error(f"--offset-scan-time は0より大きく{scan_time}秒以下にしてください。")
     if round(args.offset_scan_time * output / (2 if args.scan_half else 1)) < 1:
@@ -807,7 +819,8 @@ def main():
                     scan_axis=args.scan_axis,
                     offset_scan_time=args.offset_scan_time,
                     on_length=args.on_length,
-                    offset_step_time=args.offset_step_time
+                    offset_step_time=args.offset_step_time,
+                    rfi=args.rfi
                 )
         else:
             run_fringe_steps(
@@ -825,7 +838,8 @@ def main():
                 scan_axis=args.scan_axis,
                 offset_scan_time=args.offset_scan_time,
                 on_length=args.on_length,
-                    offset_step_time=args.offset_step_time
+                offset_step_time=args.offset_step_time,
+                rfi=args.rfi
             )
 
     print("--- 全ての処理が完了しました ---")
@@ -836,3 +850,4 @@ if __name__ == "__main__":
     except (ValueError, ET.ParseError, AttributeError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+
