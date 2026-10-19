@@ -31,6 +31,8 @@ SAVE_POLAR_NPZ = True
 import os
 import sys
 import argparse
+import atexit
+import shlex
 import json
 from holography_mc import (calibrate_phase, grid_layout, average_grid, aperture_from_beam,
                            correct_aperture_phase, remove_phase_tilt, noise_sigmas, run_monte_carlo)
@@ -164,7 +166,8 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input beam.txt --output output --on-amp-min 0.4\n\n"
         "  python Holography.py --in beam.txt --out output --mc-trials 300 --mc-seed 42\n\n"
         "--input と --output は必須です。\n"
-        "各図をPNGとPDFで保存します。PDFはoutput/pdf/以下にまとめます。"
+        "各図をPNGとPDFで保存します。PDFはoutput/pdf/以下にまとめます。\n"
+        "解析中のターミナル出力はoutput/Holography.logにも保存します（実行ごとに追記）。"
     ),
     formatter_class=argparse.RawTextHelpFormatter,
 )
@@ -295,6 +298,56 @@ BASE_DIR = os.path.dirname(os.path.abspath(BEAM_FILE))
 SLICE_DIR = os.path.join(OUT_DIR, "slice")
 
 os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def start_analysis_log(output_dir):
+    """Keep console output and mirror stdout/stderr to an append-only run log."""
+    log_path = os.path.abspath(os.path.join(output_dir, "Holography.log"))
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+
+    class TeeStream:
+        def __init__(self, console):
+            self.console = console
+
+        def write(self, text):
+            self.console.write(text)
+            log_file.write(text)
+            log_file.flush()
+            return len(text)
+
+        def flush(self):
+            self.console.flush()
+            log_file.flush()
+
+        def __getattr__(self, name):
+            return getattr(self.console, name)
+
+    stdout_tee, stderr_tee = TeeStream(original_stdout), TeeStream(original_stderr)
+    # Header distinguishes repeated runs and records the options for comparison.
+    log_file.write("\n" + "=" * 72 + "\n")
+    log_file.write(f"Run started: {datetime.now().astimezone().isoformat(timespec='seconds')}\n")
+    log_file.write(f"Working directory: {os.getcwd()}\n")
+    log_file.write(f"Command: {shlex.join([sys.executable, *sys.argv])}\n")
+    log_file.flush()
+    sys.stdout, sys.stderr = stdout_tee, stderr_tee
+
+    def close_log():
+        # Restore streams before closing so interpreter shutdown can flush them.
+        stdout_tee.flush()
+        stderr_tee.flush()
+        if sys.stdout is stdout_tee:
+            sys.stdout = original_stdout
+        if sys.stderr is stderr_tee:
+            sys.stderr = original_stderr
+        log_file.close()
+
+    atexit.register(close_log)
+    return log_path
+
+
+ANALYSIS_LOG_PATH = start_analysis_log(OUT_DIR)
+print(f"[INFO] 解析ログ: {ANALYSIS_LOG_PATH}")
 if GENERATE_SLICES:
     os.makedirs(SLICE_DIR, exist_ok=True)
 
@@ -2010,6 +2063,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
