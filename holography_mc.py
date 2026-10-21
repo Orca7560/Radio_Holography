@@ -82,14 +82,17 @@ def remove_phase_tilt(phase, x, y, fit_mask):
     return phase - plane, plane, coefficients
 
 
-def noise_sigmas(amplitude, snr, length):
-    """A/SNR per quadrature; impute undefined values only within same Length."""
+def noise_sigmas(amplitude, snr, length, snr_definition="quadrature"):
+    """Convert the stated SNR noise convention to per-quadrature SD."""
+    factors = {"quadrature": 1.0, "mean-amplitude": np.sqrt(2 / np.pi)}
+    if snr_definition not in factors:
+        raise ValueError(f"Unknown SNR definition: {snr_definition}")
     amplitude, snr, length = map(lambda v: np.asarray(v, dtype=float), (amplitude, snr, length))
     if not np.all(np.isfinite(amplitude) & (amplitude >= 0) & np.isfinite(length) & (length > 0)):
         raise ValueError('Monte Carlo requires finite nonnegative Amp and positive Length.')
     valid = np.isfinite(snr) & (snr > 0) & (amplitude > 0)
     sigma = np.full(amplitude.shape, np.nan)
-    sigma[valid] = amplitude[valid] / snr[valid]
+    sigma[valid] = factors[snr_definition] * amplitude[valid] / snr[valid]
     valid &= np.isfinite(sigma) & (sigma > 0)
     imputed = ~valid
     for index in np.flatnonzero(imputed):
@@ -155,4 +158,5 @@ def run_monte_carlo(field, sigma, times, on_indices, measurement_indices, layout
                 surface_trials_mm=surfaces, rms_trials_mm=metrics,
                 phase_branch_change_fraction=branch_count / trials,
                 nominal_aperture=nominal_aperture)
+
 
