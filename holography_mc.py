@@ -24,6 +24,21 @@ def calibrate_phase(field, times, on_indices, linear_fit=False):
     return corrected, reference, slope
 
 
+def calibrate_amplitude(field, times, on_indices):
+    """Normalize by the linearly interpolated ON amplitude (endpoint hold)."""
+    corrected = np.asarray(field, dtype=complex).copy()
+    if len(on_indices) < 2:
+        raise ValueError('ON amplitude normalization requires at least two ON points.')
+    on_times = np.asarray(times)[on_indices]
+    amplitudes = np.abs(corrected[on_indices])
+    if not np.all(np.diff(on_times) > 0):
+        raise ValueError('ON amplitude normalization requires increasing distinct ON epochs.')
+    if not np.all(np.isfinite(amplitudes) & (amplitudes > 0)):
+        raise ValueError('ON amplitudes must be finite and positive.')
+    reference = np.interp(times, on_times, amplitudes)
+    return corrected / reference, reference
+
+
 def grid_layout(az, el, x_axis, y_axis):
     """Cache exactly the nearest-cell assignment and nearest gap filling."""
     ix = np.array([np.argmin(np.abs(x_axis - value)) for value in az])
@@ -87,7 +102,7 @@ def noise_sigmas(amplitude, snr, length):
 
 def run_monte_carlo(field, sigma, times, on_indices, measurement_indices, layout,
                     x, y, fit_mask, rms_masks, wavelength, trials, seed=None,
-                    linear_fit=False, progress=None):
+                    linear_fit=False, progress=None, normalize_amplitude=False):
     """Propagate independent complex noise on original points including ONs.
 
     Geometry, peak shift, gridding assignment, ON membership and RMS masks are
@@ -101,6 +116,8 @@ def run_monte_carlo(field, sigma, times, on_indices, measurement_indices, layout
     metrics = np.empty((trials, len(rms_masks)))
     factor = wavelength * 1000 / (4 * np.pi)
     nominal, _, _ = calibrate_phase(field, times, on_indices, linear_fit)
+    if normalize_amplitude:
+        nominal, _ = calibrate_amplitude(nominal, times, on_indices)
     nominal_grid, _ = average_grid(nominal[measurement_indices], layout)
     nominal_aperture = aperture_from_beam(nominal_grid)
     nominal_phase = np.angle(nominal_aperture)
@@ -109,6 +126,8 @@ def run_monte_carlo(field, sigma, times, on_indices, measurement_indices, layout
     for trial in range(trials):
         noisy = field + sigma * (rng.standard_normal(len(field)) + 1j * rng.standard_normal(len(field)))
         corrected, _, _ = calibrate_phase(noisy, times, on_indices, linear_fit)
+        if normalize_amplitude:
+            corrected, _ = calibrate_amplitude(corrected, times, on_indices)
         beam, _ = average_grid(corrected[measurement_indices], layout)
         aperture = aperture_from_beam(beam)
         amplitudes[trial] = np.abs(aperture)
@@ -136,3 +155,4 @@ def run_monte_carlo(field, sigma, times, on_indices, measurement_indices, layout
                 surface_trials_mm=surfaces, rms_trials_mm=metrics,
                 phase_branch_change_fraction=branch_count / trials,
                 nominal_aperture=nominal_aperture)
+

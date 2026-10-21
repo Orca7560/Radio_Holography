@@ -34,7 +34,7 @@ import argparse
 import atexit
 import shlex
 import json
-from holography_mc import (calibrate_phase, grid_layout, average_grid, aperture_from_beam,
+from holography_mc import (calibrate_amplitude, calibrate_phase, grid_layout, average_grid, aperture_from_beam,
                            correct_aperture_phase, remove_phase_tilt, noise_sigmas, run_monte_carlo)
 import errno
 import tempfile
@@ -667,7 +667,7 @@ print(f"[INFO] PRDの折返し中の{cross_axis}座標は、最寄りの本走�
 # 変数抽出 ＆ 空間ズレ補正 ＆ 位相補正
 # =========================
 E, Az, El, SNR = df["E"].values, df["Az"].values, df["El"].values, df["SNR"].values
-times_sec = df["Epoch"].astype(np.int64).values / 1e9  
+times_sec = df["Epoch"].to_numpy(dtype="datetime64[ns]").astype(np.int64) / 1e9  
 
 def offset_map_peak(az, el, field, scan_mask, step_az, step_el):
     """Peak of observed complex-averaged raster cells, excluding stationary ON."""
@@ -740,6 +740,8 @@ E_corr = E.copy()
 
 # 通常解析とMCで同じON補正関数を使用する。
 E_corr, phase_reference, phase_slope = calibrate_phase(E, times_sec, on_idx, ON_PHASE_LINEAR_FIT)
+E_corr, amplitude_reference = calibrate_amplitude(E_corr, times_sec, on_idx)
+print(f"[INFO] ON amplitude normalization: {amplitude_reference.min():.6g} to {amplitude_reference.max():.6g}")
 reference_label = "ON linear interpolation (correction)"
 if phase_reference is not None and ON_PHASE_LINEAR_FIT:
     reference_label = "All ON points: linear fit (correction)"
@@ -765,7 +767,9 @@ ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
                zorder=3, label="ON used for phase correction")
-ax_amp.set_ylabel("Amplitude")
+ax_amp.plot(time_axis, amplitude_reference, color="black", linewidth=1.2, label="ON amplitude reference")
+ax_amp.legend()
+ax_amp.set_ylabel("Raw amplitude")
 ax_amp.grid(True, alpha=0.25)
 
 
@@ -982,6 +986,8 @@ valid_cells = count_grid > 0
 beam_grid, beam_grid_raw = average_grid(E_corr, mc_layout)
 snr_grid, _ = average_grid(SNR, mc_layout)
 
+print(f"[INFO] Grid shape={count_grid.shape}, occupied={np.count_nonzero(valid_cells)}, nearest-filled={np.count_nonzero(~valid_cells)}")
+np.savez_compressed(os.path.join(OUT_DIR, "gridding_diagnostic.npz"), count=count_grid, az_arcmin=tx_arcmin, el_arcmin=ty_arcmin, raw=beam_grid_raw, filled=beam_grid)
 beam_grid_amp = np.abs(beam_grid)
 
 
@@ -1635,7 +1641,7 @@ if args.mc_trials:
     mc = run_monte_carlo(
         mc_input_field, mc_sigma, mc_input_times, on_idx, measurement_indices, mc_layout,
         X, Y, fit_mask, (surface_full_aperture_mask, surface_rms_mask), wavelength,
-        args.mc_trials, mc_seed, ON_PHASE_LINEAR_FIT, mc_progress)
+        args.mc_trials, mc_seed, ON_PHASE_LINEAR_FIT, mc_progress, normalize_amplitude=True)
     # Guard against accidental divergence between the nominal and MC pipelines.
     if not np.allclose(mc["nominal_aperture"], aperture, rtol=1e-12, atol=1e-14):
         raise RuntimeError("通常解析とMCの基準開口面が一致しません。")
@@ -1654,6 +1660,7 @@ if args.mc_trials:
                    wavelength_m=wavelength, input_file=os.path.abspath(BEAM_FILE),
                    scope="Thermal-noise propagation conditional on fixed geometry and ON selection; observed data used as signal estimate.",
                    on_phase_method="linear_fit" if ON_PHASE_LINEAR_FIT else "interpolation",
+                   on_amplitude_method="linear_interpolation_endpoint_hold",
                    on_count=len(on_idx), on_amp_min=args.on_amp_min,
                    exclude_on_time=[str(t) for t in args.exclude_on_time],
                    include_center_crossings=args.include_center_crossings,
@@ -2063,6 +2070,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
