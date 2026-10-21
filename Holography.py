@@ -254,6 +254,10 @@ parser.add_argument(
     "--mc-seed", type=int, default=None, metavar="SEED",
     help="モンテカルロ乱数のシード（0以上の整数）。同じ入力・設定・シードで再現可能。",
 )
+parser.add_argument("--mc-snr-definition", choices=("mean-amplitude", "quadrature"),
+                    default="mean-amplitude",
+                    help="SNR分母の定義。既定mean-amplitudeはfrinZの平均雑音振幅: sigma=sqrt(2/pi)*Amp/SNR。quadratureは従来のsigma=Amp/SNR。")
+
 if len(sys.argv) == 1:
     parser.print_help()
     sys.exit(1)
@@ -1616,7 +1620,7 @@ if args.mc_trials:
     mc_sigma = np.zeros(len(mc_input_field))
     sigma_used, imputed = noise_sigmas(
         df["Amp"].to_numpy()[used_indices], df["SNR"].to_numpy()[used_indices],
-        df["Length"].to_numpy()[used_indices])
+        df["Length"].to_numpy()[used_indices], snr_definition=args.mc_snr_definition)
     mc_sigma[used_indices] = sigma_used
     starts = mc_input_times[used_indices]
     ends = starts + df["Length"].to_numpy()[used_indices]
@@ -1632,7 +1636,7 @@ if args.mc_trials:
     if np.any(imputed):
         print(f"[WARN] MC: A/SNRを算出できない{np.count_nonzero(imputed)}点は、同じLengthの"
               "有効点の雑音中央値で補いました。noise_sigma.csvを参照してください。")
-    print(f"[MC] {args.mc_trials} trials; independent real/imaginary noise sigma=A/SNR; "
+    print(f"[MC] {args.mc_trials} trials; independent real/imaginary noise; SNR definition={args.mc_snr_definition}; "
           f"ON reference refitted each trial; seed={mc_seed}", flush=True)
     print("[MC] 座標・ピーク移動量・ON採用点・RMSマスクは通常解析の値に固定します。", flush=True)
     def mc_progress(done, total):
@@ -1672,7 +1676,9 @@ if args.mc_trials:
                    rms_annulus_radius_m=[SURFACE_RMS_RADIUS_MIN_M, SURFACE_RMS_RADIUS_MAX_M],
                    imputed_sigma_count=int(np.count_nonzero(imputed)),
                    overlapping_integration_count=overlap_count,
-                   independent_measurement_noise=True)
+                   independent_measurement_noise=True,
+                   snr_definition=args.mc_snr_definition,
+                   sigma_to_amp_over_snr=float(np.sqrt(2 / np.pi)) if args.mc_snr_definition == "mean-amplitude" else 1.0)
     for column, name, nominal in ((0, "full_aperture", rms_full_aperture_tilt),
                                   (1, "annulus", rms_annulus_tilt)):
         values = mc["rms_trials_mm"][:, column]
@@ -1687,6 +1693,9 @@ if args.mc_trials:
         mc["surface_std_mm"][surface_full_aperture_mask] ** 2)))
     branch_mask = mc["phase_branch_change_fraction"] > 0
     summary["phase_branch_unstable_pixels_in_aperture"] = int(np.count_nonzero(branch_mask & mask))
+    summary["phase_branch_unstable_pixels_in_rms_mask"] = int(np.count_nonzero(branch_mask & surface_full_aperture_mask))
+    summary["phase_branch_unstable_pixels_in_fit_mask"] = int(np.count_nonzero(branch_mask & fit_mask))
+    summary["nominal_phase_folded_pixels_in_rms_mask"] = int(np.count_nonzero((np.abs(np.angle(aperture)) > np.deg2rad(135)) & surface_full_aperture_mask))
     if np.any(branch_mask & mask):
         print("[WARN] MC: 開口内で従来の±135度位相補正の分岐をまたぐ画素があります。"
               "phase_branch_change_fractionを確認してください。")
@@ -2070,6 +2079,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
