@@ -221,11 +221,20 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
         for filepath in txt_files:
             print(f"  -> 処理中: {filepath}")
             with open(filepath, 'r') as infile:
+                coordinate_window = None
                 for line in infile:
+                    if line.startswith('# COORDINATE_WINDOW '):
+                        if scan_lag_ms != 0:
+                            raise ValueError('corr_fringeの座標固定データには--scan-lag-ms 0を指定してください（二重補正を防止）。')
+                        coordinate_epoch, coordinate_length = line[len('# COORDINATE_WINDOW '):].strip().split('|')
+                        coordinate_window = (coordinate_epoch, float(coordinate_length))
+                        continue
                     if line.startswith('#'):
                         continue
                     
                     parts = line.split()
+                    window = coordinate_window
+                    coordinate_window = None
                     
                     if len(parts) < 17:
                         continue
@@ -264,13 +273,14 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                             delay = float(parts[delay_index])
                             output_parts.append(f"{delay:.2f}")
 
+                        coord_epoch, coord_length = window if window is not None else (epoch, integration_length_s)
                         if prd_data:
                             try:
-                                epoch_dt = datetime.strptime(epoch, '%Y/%j %H:%M:%S.%f')
+                                epoch_dt = datetime.strptime(coord_epoch, '%Y/%j %H:%M:%S.%f')
                             except ValueError:
-                                epoch_dt = datetime.strptime(epoch, '%Y/%j %H:%M:%S')
+                                epoch_dt = datetime.strptime(coord_epoch, '%Y/%j %H:%M:%S')
                             az, el, az_rate, el_rate = prd_offset_at(
-                                prd_data, prd_times, epoch_dt, integration_length_s, scan_lag_ms / 1000.0,
+                                prd_data, prd_times, epoch_dt, coord_length, scan_lag_ms / 1000.0,
                                 az_drive_speed=az_drive_speed, scan_axis=scan_axis,
                                 el_drive_speed=el_drive_speed
                             )
@@ -279,7 +289,7 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                                 f"{az_rate:.6f}", f"{el_rate:.6f}",
                             ])
                         elif skd_data:
-                            epoch_key = epoch.split('.')[0] + '.000'
+                            epoch_key = coord_epoch.split('.')[0] + '.000'
                             az, el = skd_data.get(epoch_key, (np.nan, np.nan))
                             output_parts.extend([f"{az:.1f}", f"{el:.1f}"])
                         
@@ -368,3 +378,4 @@ if __name__ == "__main__":
                              add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
                              az_drive_speed=args.az_drive_speed, is_maser=args.maser,
                              scan_axis=args.scan_axis, el_drive_speed=args.el_drive_speed)
+

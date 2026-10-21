@@ -6,8 +6,9 @@ Example:
 
 Negative lag moves integration boundaries earlier; positive lag moves them
 later. Only the selected Az direction is corrected. Integrations shifted
-completely outside the .cor data are skipped, while an integration crossing
-an edge is shortened. XML/SKD and nominal output Epochs are unchanged. With
+completely outside the .cor data raise an error, while an integration crossing
+an edge is shortened. XML/SKD are unchanged. Output Epoch is the actual integration start;
+COORDINATE_WINDOW comments retain the nominal coordinate window. With
 output=100, length/skip units are 10 ms, not milliseconds.
 """
 import sys
@@ -207,10 +208,8 @@ def apply_scan_lag(tasks, lag_ms, total_length):
 
     -100 ms at 100 samples/s:
       (skip,length) (0,25),(25,50),(75,50),... -> (0,15),(15,50),(65,50),...
-    An interval moved wholly outside [0,total_length] is omitted. A partially
-    overlapping interval is clipped at the edge. Thus, for 10-ms integrations
-    and -100 ms, the first ten nominal integrations are omitted and the
-    integration nominally starting at 100 ms reads the data at 0--10 ms.
+    An interval wholly outside the available data raises an error. A partially
+    overlapping interval is clipped; its original coordinate window is retained.
     """
     units = lag_ms * output / 1000.0
     if not math.isfinite(units) or not math.isclose(units, round(units), abs_tol=1e-8):
@@ -224,9 +223,11 @@ def apply_scan_lag(tasks, lag_ms, total_length):
         start = max(start, 0.0)
         end = min(end, total_length)
         if end <= start:
-            continue
+            raise ValueError("ラグ補正で積分区間が.corの範囲外になります。"
+                             "欠損点を作らないため停止します。前後に余裕のある相関データが必要です。")
         adjusted.append(dict(task, skip=start, length=end - start,
-                             nominal_skip=nominal_skip))
+                             nominal_skip=nominal_skip,
+                             nominal_length=task['length']))
     if not adjusted:
         raise ValueError("ラグ補正後に実行可能な積分区間が残りません。")
     return adjusted
@@ -460,6 +461,9 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                 start += timedelta(seconds=float(scan.find('skip').text))
                 if not is_on_scan(scan, on_length):
                     directions[start] = infer_scan_direction(start, scan_positions, scan_axis)
+                    # Validate shifted windows before opening any output files.
+                    preview_tasks = make_offset_tasks(offset_scan_time, offset_step_time, scan_half=scan_half)
+                    apply_scan_lag(preview_tasks, direction_lags[directions[start]], float(scan_time * output))
         for direction, lag in direction_lags.items():
             if lag != 0 and direction not in directions.values():
                 raise ValueError(f"{scan_axis.title()}方向 {direction:+d} のスキャンがありません。SKDを確認してください。")
@@ -470,7 +474,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
         if use_freq:
             line = (
                 f" {fringe_data['epoch']:<21} {fringe_data['label']:>6} {fringe_data['source']:>6} "
-                f"{fringe_data['length']:>9.2f} {fringe_data['amp']:>12.6f} {fringe_data['snr']:>8.1f} "
+                f"{fringe_data['length']:>9.6f} {fringe_data['amp']:>12.6f} {fringe_data['snr']:>8.1f} "
                 f"{fringe_data['phase']:>12.3f} {fringe_data['frequency']:>+12.7f} {fringe_data['noise_level']:>10.6f} "
                 f"{fringe_data['res_rate']:>+10.6f} {fringe_data['x_az']:>7.3f} {fringe_data['x_el']:>7.3f} {fringe_data['x_h']:>7.3f} "
                 f"{fringe_data['y_az']:>8.3f} {fringe_data['y_el']:>7.3f} {fringe_data['y_h']:>7.3f}  {fringe_data['mjd']:>11.5f}   "
@@ -569,7 +573,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                             print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} を {lag_ms:+g} ms補正: "
                                   f"先頭 --length {first['length']:g} --skip {first['skip']:g} "
                                   f"({first['length'] / output * 1000:g} ms積分)、"
-                                  f"範囲外 {skipped_count} 区間をスキップ。Epochは補正前の時刻を保持。")
+                                  f"範囲外 {skipped_count} 区間をスキップ。Epochは実積分開始時刻，座標用の補正前窓は別途保持。")
                         else:
                             print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} のラグは0 msです。")
 
@@ -604,12 +608,17 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
 
                         if fringe_data:
                             if processor == "frinZ":
-                                # Keep the original schedule/bin label. Only
-                                # the frinZ integration window is shifted.
+                                # Preserve the coordinate window; report actual integration time.
                                 nominal_skip = task.get('nominal_skip', float_skip)
-                                output_time = scan_start_datetime + timedelta(seconds=nominal_skip / output)
+                                nominal_length = task.get('nominal_length', float_length)
+                                coordinate_epoch = scan_start_datetime + timedelta(seconds=nominal_skip / output)
+                                # Keep the nominal coordinate window independently of actual data time.
+                                if apply_lags:
+                                    f.write(f"# COORDINATE_WINDOW {coordinate_epoch.strftime('%Y/%j %H:%M:%S.%f')}|{nominal_length / output:.6f}\n")
+                                output_time = scan_start_datetime + timedelta(seconds=int_skip / output)
+                                fringe_data['length'] = int_length / output
                                 # YYYY/DDD HH:MM:SS.ss 形式に整形
-                                exact_epoch_str = output_time.strftime('%Y/%j %H:%M:%S.%f')[:-4]
+                                exact_epoch_str = output_time.strftime('%Y/%j %H:%M:%S.%f')
                                 fringe_data['epoch'] = exact_epoch_str
                                 
                                 # 小数秒を加味してMJDも正確に再計算
@@ -625,7 +634,7 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                         
             print(f"  [SUCCESS] 結果を {output_txt_file} に保存しました。\n")
         except (ET.ParseError, AttributeError, ValueError) as e:
-            print(f"  [ERROR] XML処理中にエラー: {xml_file} ({e})\n")
+            raise ValueError(f"XML処理中にエラー: {xml_file} ({e})") from e
 
 
 def main():
@@ -646,7 +655,7 @@ def main():
             "obs_code ディレクトリに移動して処理します。--only-* を何も指定しない"
             "場合はgico3処理とfringe処理の両方を実行します。\n"
             "方向別ラグは --only-frinZ / --only-frinZ-freq 使用時のみ有効です。"
-            "Az増加・減少それぞれの積分境界を1 ms刻みでずらします（Epochは不変）。\n"
+            "Az増加・減少それぞれの積分境界を1 ms刻みでずらします（座標用時刻は不変，Epochは実積分時刻）。\n"
             "gico3, fringe, frinZ の各コマンドにPATHが通っている必要があります。"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -850,4 +859,5 @@ if __name__ == "__main__":
     except (ValueError, ET.ParseError, AttributeError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
