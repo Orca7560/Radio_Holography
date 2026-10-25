@@ -450,13 +450,16 @@ def format_aperture_axes(ax):
 
 def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
                                    output_dir, db_min):
-    """Plot native-grid amplitude cuts using one global 20 log10 reference."""
+    """Plot native-grid amplitude cuts, each normalized to its own peak."""
     amplitude = np.abs(field)
-    reference = np.nanmax(amplitude)
-    if not np.isfinite(reference) or reference <= 0:
-        raise ValueError("開口面振幅の断面には正の有限な基準振幅が必要です。")
-    with np.errstate(divide="ignore", invalid="ignore"):
-        values_db = 20 * np.log10(amplitude / reference)
+    def normalize_slice(linear):
+        finite = linear[np.isfinite(linear)]
+        reference = float(np.max(finite)) if finite.size else np.nan
+        if not np.isfinite(reference) or reference <= 0:
+            return np.full(linear.shape, np.nan), reference
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return 20 * np.log10(linear / reference), reference
+
     radius = diameter / 2
     root = os.path.join(output_dir, "aperture_amplitude_slice")
     os.makedirs(root, exist_ok=True)
@@ -490,8 +493,8 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         selected = [i for i, fixed in enumerate(fixed_axis) if abs(fixed) < radius]
         for counter, index in enumerate(selected, 1):
             fixed = fixed_axis[index]
-            values = values_db[index, :] if axis_name == "X" else values_db[:, index]
             linear = amplitude[index, :] if axis_name == "X" else amplitude[:, index]
+            values, reference = normalize_slice(linear)
             fig, ax = plt.subplots(figsize=(8, 5))
             draw(ax, coord, values, fixed)
             ax.set_xlabel(f"{axis_name.lower()} [m]")
@@ -508,13 +511,15 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
                 print(f"[INFO] 開口面振幅断面 {axis_name}: {counter}/{len(selected)}", flush=True)
     pd.concat(records, ignore_index=True).to_csv(os.path.join(root, "slices.csv"), index=False)
 
-    # Centre and off-centre cuts can be compared without renormalizing each cut.
+    # Use the same per-slice normalization for summary and individual plots.
     for name, target in (("center", 0.0), ("offset", radius / 2)):
         iy = int(np.argmin(np.abs(y_axis - target)))
         ix = int(np.argmin(np.abs(x_axis - target)))
         fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-        draw(axes[0], x_axis, values_db[iy, :], y_axis[iy])
-        draw(axes[1], y_axis, values_db[:, ix], x_axis[ix])
+        x_values, _ = normalize_slice(amplitude[iy, :])
+        y_values, _ = normalize_slice(amplitude[:, ix])
+        draw(axes[0], x_axis, x_values, y_axis[iy])
+        draw(axes[1], y_axis, y_values, x_axis[ix])
         axes[0].set_xlabel("x [m]")
         axes[1].set_xlabel("y [m]")
         fig.tight_layout()
@@ -522,9 +527,9 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         save_figure(fig, path, dpi=150)
         plt.close(fig)
         print(f"[INFO] 振幅断面 {name}: 左 y={y_axis[iy]:+.4f} m、右 x={x_axis[ix]:+.4f} m: {path}")
-    print(f"[INFO] 開口面振幅断面: 共通0 dB基準={reference:.8g}、"
+    print("[INFO] 開口面振幅断面: 各断面の最大振幅を0 dBに規格化、"
           f"格子間隔 dx={abs(x_axis[1]-x_axis[0]):.4g} m, dy={abs(y_axis[1]-y_axis[0]):.4g} m。"
-          "断面ごとの規格化・追加補間・平滑化なし。")
+          "各断面の基準振幅はslices.csvに保存。追加補間・平滑化なし。")
 
 
 def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
