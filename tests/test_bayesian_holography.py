@@ -75,6 +75,28 @@ class BayesianTests(unittest.TestCase):
         independent[0] += 3
         self.assertGreater(bh.diagnostics(independent)['rank_split_rhat'], 1.1)
 
+    def test_zero_snr_uses_mean_sigma_at_matching_length(self):
+        table = pd.DataFrame(dict(Epoch=['a','b','c','d','e','f'],
+                                  Length=[.5,.5,.5,.5,10,10],
+                                  Amp=[.2,.6,.000065,0,10,1],
+                                  SNR=[2,2,0,0,10,0]))
+        sigma, imputed = bh.measurement_sigmas(table)
+        # mean(.1,.3)=.2; the long ON's sigma=1 must not contribute.
+        np.testing.assert_allclose(sigma, [.1,.3,.2,.2,1,1])
+        np.testing.assert_array_equal(imputed, [False,False,True,True,False,True])
+        table.loc[0, 'SNR'] = -1
+        for override in (None, .5):
+            with self.assertRaisesRegex(ValueError, 'negative SNR'):
+                bh.measurement_sigmas(table, override)
+
+    def test_zero_snr_without_matching_donors_fails(self):
+        table = pd.DataFrame(dict(Epoch=['a','b'], Length=[.5,10], Amp=[.1,1], SNR=[0,2]))
+        with self.assertRaisesRegex(ValueError, 'no positive-SNR points'):
+            bh.measurement_sigmas(table)
+        sigma, imputed = bh.measurement_sigmas(table, .25)
+        np.testing.assert_allclose(sigma, .25)
+        self.assertFalse(imputed.any())
+
     def test_on_calibration_and_34m_sign(self):
         args = bh.parser().parse_args(['--in', 'placeholder', '--antenna', '34'])
         with tempfile.TemporaryDirectory() as d:
@@ -88,6 +110,12 @@ class BayesianTests(unittest.TestCase):
             np.testing.assert_allclose(field, 1, atol=1e-14)
             np.testing.assert_allclose(sigma, .05)
             self.assertEqual(len(used), 4)
+            table.loc[2, 'SNR'] = 0
+            table.to_csv(args.input, index=False)
+            rows, used, field, sigma, _ = bh.read_data(args)
+            np.testing.assert_allclose(sigma, .05)
+            self.assertTrue(rows.quadrature_sigma_imputed.iloc[2])
+            self.assertAlmostEqual(rows.raw_quadrature_sigma.iloc[2], .1)
             np.testing.assert_allclose(rows.reference_phase_rad, np.pi/6)
             table.loc[2, 'Epoch'] = table.loc[1, 'Epoch']
             table.to_csv(args.input, index=False)

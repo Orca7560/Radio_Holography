@@ -28,7 +28,7 @@ def parser():
     p.add_argument('--exclude-center-crossings', action='store_true')
     p.add_argument('--on-phase-linear-fit', action='store_true')
     p.add_argument('--exclude-on-time', action='append', default=[], help='integration-start Epoch; repeatable')
-    p.add_argument('--noise-sigma', type=float, help='override raw-data quadrature noise SD; otherwise Amp/SNR')
+    p.add_argument('--noise-sigma', type=float, help='override raw-data quadrature noise SD; otherwise Amp/SNR, with zero SNR filled by mean sigma at matching Length')
     p.add_argument('--scan-width', type=float, help='use offsets within +/- this value in both axes [arcmin]')
     p.add_argument('--motion-average', action='store_true', help='average a constant-rate scan over Length; coordinates must be midpoints')
     p.add_argument('--chains', type=int, default=4)
@@ -104,6 +104,37 @@ def smooth_basis(support, dx):
     return np.maximum(eig, 0), basis
 
 
+def measurement_sigmas(table, override=None):
+    """Fill zero SNR from arithmetic mean raw sigma at matching Length."""
+    amp = table.Amp.to_numpy(dtype=float)
+    snr = table.SNR.to_numpy(dtype=float)
+    length = table.Length.to_numpy(dtype=float)
+    if np.any(snr < 0):
+        raise ValueError('SNR must be nonnegative; negative SNR cannot be imputed')
+    imputed = np.zeros(len(table), dtype=bool)
+    if override is not None:
+        return np.full(len(table), override), imputed
+    valid = snr > 0
+    if np.any(amp[valid] <= 0):
+        raise ValueError('Amp must be positive when SNR is positive')
+    sigma = np.full(len(table), np.nan)
+    sigma[valid] = amp[valid]/snr[valid]
+    if not np.all(np.isfinite(sigma[valid]) & (sigma[valid] > 0)):
+        raise ValueError('Amp/SNR must give a positive finite sigma')
+    # Donors are original positive-SNR points only: never reuse filled values.
+    for i in np.flatnonzero(~valid):
+        peers = valid & np.isclose(length, length[i], rtol=0., atol=1e-6)
+        if not peers.any():
+            raise ValueError(f'Cannot fill SNR=0 at {table.Epoch.iloc[i]}: '
+                             f'no positive-SNR points with Length={length[i]:g} s')
+        sigma[i] = np.mean(sigma[peers])
+        imputed[i] = True
+        print(f'[INFO] SNR=0: Epoch={table.Epoch.iloc[i]}, Length={length[i]:g} s; '
+              f'raw sigma={sigma[i]:.10g} (arithmetic mean of {peers.sum()} matching-Length points)',
+              flush=True)
+    return sigma, imputed
+
+
 def read_data(args):
     table = pd.read_csv(args.input, skipinitialspace=True)
     table.columns = table.columns.str.strip()
@@ -122,12 +153,9 @@ def read_data(args):
     if (table.Length <= 0).any() or (table.Amp < 0).any():
         raise ValueError('Length must be positive and Amp nonnegative')
     field = table.Amp.to_numpy()*np.exp(1j*np.deg2rad(table.Phase.to_numpy()) * (-1 if args.antenna == 34 else 1))
-    if args.noise_sigma is None:
-        if (table.Amp <= 0).any() or (table.SNR <= 0).any():
-            raise ValueError('Amp/SNR needs positive Amp and SNR; supply --noise-sigma for known raw noise SD')
-        sigma = (table.Amp/table.SNR).to_numpy()
-    else:
-        sigma = np.full(len(table), args.noise_sigma)
+    sigma, sigma_imputed = measurement_sigmas(table, args.noise_sigma)
+    table['raw_quadrature_sigma'] = sigma.copy()
+    table['quadrature_sigma_imputed'] = sigma_imputed
     center = np.isclose(table.Az_Offset, 0, atol=1e-8, rtol=0) & np.isclose(table.El_Offset, 0, atol=1e-8, rtol=0)
     stationary = center & np.isclose(table.Length, args.on_length, atol=1e-6, rtol=0)
     on = stationary.copy() if args.exclude_center_crossings else center.copy()
@@ -412,7 +440,7 @@ def save_results(args, axis, x, y, support, dx, basis, coefficients, parameters,
                'quadrature_residual_mean_square': float(np.mean(np.abs((data-pred)/sigma)**2)/2),
                'pixel_size_m': dx, 'nominal_fourier_resolution_m': [float(wave/(np.ptp(used.Az_Offset)*ARCMIN)), float(wave/(np.ptp(used.El_Offset)*ARCMIN))],
                'conditions': ['ON gains fixed; ON calibration uncertainty/correlations not included',
-                              'independent Gaussian noise with raw quadrature sigma=Amp/SNR',
+                              'independent Gaussian noise; raw sigma=Amp/SNR, zero SNR filled by arithmetic mean at matching Length unless overridden',
                               'support and zero blockage imposed; Gaussian prior on complex field, not on surface height',
                               'surface sign is lambda*phase/(4pi); physical front/back sign and sky handedness require external validation',
                               'tilt removed after masked 2D phase unwrapping, unlike legacy 135-degree branch rule',
