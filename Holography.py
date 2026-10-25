@@ -164,7 +164,8 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input beam.txt --output output --center-on-peak\n"
         "  python Holography.py --input beam.txt --output output --on-phase-linear-fit\n"
         "  python Holography.py --input beam.txt --output output --on-amp-min 0.4\n\n"
-        "  python Holography.py --in beam.txt --out output --mc-trials 300 --mc-seed 42\n\n"
+        "  python Holography.py --in beam.txt --out output --mc-trials 300 --mc-seed 42\n"
+        "  python Holography.py --in beam.txt --out output --antenna 32 --slice-aperture-amp\n\n"
         "--input と --output は必須です。\n"
         "各図をPNGとPDFで保存します。PDFはoutput/pdf/以下にまとめます。\n"
         "解析中のターミナル出力はoutput/Holography.logにも保存します（実行ごとに追記）。"
@@ -205,7 +206,12 @@ parser.add_argument(
 parser.add_argument(
     "--slice-aperture",
     action="store_true",
-    help="開口面位相のスライスを出力する。",
+    help="開口面位相と振幅(dB)の全スライスを出力する。振幅は開口面全体の最大値を0 dBとする。",
+)
+parser.add_argument(
+    "--slice-aperture-amp", action="store_true",
+    help="開口面振幅(dB)の全スライスと中心・開口半径の約半分の位置の断面比較を出力する。\n"
+         "各断面の規格化・平滑化は行わない。--slice-apertureにも含まれる。",
 )
 parser.add_argument(
     "--db-min", type=float, default=DB_MIN, metavar="DB",
@@ -440,6 +446,85 @@ def format_aperture_axes(ax):
     ax.set_aspect("equal", adjustable="box")
     ax.xaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
     ax.yaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
+
+
+def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
+                                   output_dir, db_min):
+    """Plot native-grid amplitude cuts using one global 20 log10 reference."""
+    amplitude = np.abs(field)
+    reference = np.nanmax(amplitude)
+    if not np.isfinite(reference) or reference <= 0:
+        raise ValueError("開口面振幅の断面には正の有限な基準振幅が必要です。")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        values_db = 20 * np.log10(amplitude / reference)
+    radius = diameter / 2
+    root = os.path.join(output_dir, "aperture_amplitude_slice")
+    os.makedirs(root, exist_ok=True)
+    records = []
+
+    def draw(ax, coord, values, fixed):
+        # Show original samples, including blockage and points outside the rim.
+        # NaN gaps stay gaps. Display limits never clip the saved numerical data.
+        ax.plot(coord, np.where(np.isfinite(values), values, np.nan),
+                "o-", color="black", markersize=3, linewidth=1.2)
+        if abs(fixed) <= center_size / 2:
+            ax.axvspan(-center_size / 2, center_size / 2, color="0.85", zorder=0)
+        rim = np.sqrt(max(0.0, radius**2 - fixed**2))
+        for position in (-rim, rim):
+            ax.axvline(position, color="black", linestyle="--", linewidth=1)
+        # The cited 0.9R uniform-illumination design applies to the 32 m dish.
+        # On an off-centre cut the intersection is not at +/-0.9R.
+        if diameter == 32 and abs(fixed) < 0.9 * radius:
+            transition = np.sqrt((0.9 * radius)**2 - fixed**2)
+            for position in (-transition, transition):
+                ax.axvline(position, color="black", linestyle=":", linewidth=1)
+        ax.set_xlim(-radius - 2, radius + 2)
+        ax.set_ylim(db_min, 1)
+        ax.set_ylabel("Normalized amplitude [dB]")
+        ax.grid(True, alpha=0.25)
+
+    for axis_name, coord, fixed_axis in (("X", x_axis, y_axis), ("Y", y_axis, x_axis)):
+        fixed_name = "Y" if axis_name == "X" else "X"
+        directory = os.path.join(root, f"along_{axis_name}_fixed_{fixed_name}")
+        os.makedirs(directory, exist_ok=True)
+        selected = [i for i, fixed in enumerate(fixed_axis) if abs(fixed) < radius]
+        for counter, index in enumerate(selected, 1):
+            fixed = fixed_axis[index]
+            values = values_db[index, :] if axis_name == "X" else values_db[:, index]
+            linear = amplitude[index, :] if axis_name == "X" else amplitude[:, index]
+            fig, ax = plt.subplots(figsize=(8, 5))
+            draw(ax, coord, values, fixed)
+            ax.set_xlabel(f"{axis_name.lower()} [m]")
+            fig.tight_layout()
+            filename = f"slice_{fixed_name}{index:02d}_{fixed:+.2f}m.png".replace("+", "p").replace("-", "m")
+            save_figure(fig, os.path.join(directory, filename), dpi=150)
+            plt.close(fig)
+            records.append(pd.DataFrame({
+                "slice_axis": axis_name, "fixed_coordinate_m": fixed,
+                "coordinate_m": coord, "radius_m": np.hypot(coord, fixed),
+                "amplitude": linear, "amplitude_db": values,
+                "reference_amplitude": reference}))
+            if counter == len(selected) or counter % 10 == 0:
+                print(f"[INFO] 開口面振幅断面 {axis_name}: {counter}/{len(selected)}", flush=True)
+    pd.concat(records, ignore_index=True).to_csv(os.path.join(root, "slices.csv"), index=False)
+
+    # Centre and off-centre cuts can be compared without renormalizing each cut.
+    for name, target in (("center", 0.0), ("offset", radius / 2)):
+        iy = int(np.argmin(np.abs(y_axis - target)))
+        ix = int(np.argmin(np.abs(x_axis - target)))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+        draw(axes[0], x_axis, values_db[iy, :], y_axis[iy])
+        draw(axes[1], y_axis, values_db[:, ix], x_axis[ix])
+        axes[0].set_xlabel("x [m]")
+        axes[1].set_xlabel("y [m]")
+        fig.tight_layout()
+        path = os.path.join(root, f"aperture_amplitude_db_{name}.png")
+        save_figure(fig, path, dpi=150)
+        plt.close(fig)
+        print(f"[INFO] 振幅断面 {name}: 左 y={y_axis[iy]:+.4f} m、右 x={x_axis[ix]:+.4f} m: {path}")
+    print(f"[INFO] 開口面振幅断面: 共通0 dB基準={reference:.8g}、"
+          f"格子間隔 dx={abs(x_axis[1]-x_axis[0]):.4g} m, dy={abs(y_axis[1]-y_axis[0]):.4g} m。"
+          "断面ごとの規格化・追加補間・平滑化なし。")
 
 
 def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
@@ -1286,6 +1371,9 @@ plot_db_phase_pair(
     aperture_db, np.rad2deg(np.angle(aperture)), extent_aperture,
     os.path.join(OUT_DIR, "aperture_field_db_phase_no_circle.png"), aperture_map=True)
 
+if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
+    save_aperture_amplitude_slices(x, y, aperture, D, CENTER_BLOCK_SIZE_M, OUT_DIR, DB_MIN)
+
 # 欠損セルを 0 とした IFFT。既存の nearest 補間結果とは別ファイルに保存し、
 # 後段の位相傾斜除去・鏡面 RMS の計算には使わない。
 raw_amp = np.abs(aperture_raw)
@@ -2079,6 +2167,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
