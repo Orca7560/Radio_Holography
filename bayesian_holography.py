@@ -17,6 +17,11 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--in', '--input', dest='input', type=Path, help='beam.txt (Epoch, Length, Amp, Phase, SNR, Az_Offset, El_Offset)')
     p.add_argument('--out', '--output', dest='output', type=Path, default=Path('bayesian_result'))
+    p.add_argument('--replot', type=Path, metavar='RESULT_DIR', help='replot saved results without MCMC; specify a different --out')
+    p.add_argument('--db-min', type=float, default=-45., help='dB display floor, matching Holography.py')
+    p.add_argument('--surface-limit-mm', type=float, default=3., help='symmetric surface-error display limits +/- this value [mm]')
+    p.add_argument('--zoom-size', type=float, default=24., help='full width of measured/model comparison zoom [arcmin]')
+    p.add_argument('--slice-half-width', type=float, default=.75, help='cross-axis half-width of measured/model slices [arcmin]')
     p.add_argument('--demo', action='store_true', help='generate a known asymmetric aperture and noisy beam, then reconstruct')
     p.add_argument('--antenna', type=int, choices=(32, 34), default=32)
     p.add_argument('--frequency-ghz', type=float, default=8.448)
@@ -388,11 +393,229 @@ def demo(args):
     return truth
 
 
-def save_results(args, axis, x, y, support, dx, basis, coefficients, parameters, used, data, sigma, design, wave, acceptances, truth):
+def display_style(kind, db_min=-45., surface_limit=3.):
+    """Match Holography.py for physical maps; SD remains nonnegative."""
+    if kind == 'db':
+        return dict(cmap='inferno', vmin=db_min, vmax=0), np.arange(np.ceil(db_min/10)*10, 1, 10)
+    if kind == 'phase':
+        return dict(cmap='twilight', vmin=-180, vmax=180), np.arange(-180, 181, 60)
+    if kind == 'surface':
+        return dict(cmap='coolwarm', vmin=-surface_limit, vmax=surface_limit), None
+    if kind == 'residual':
+        return dict(cmap='coolwarm', vmin=-5, vmax=5), np.arange(-4, 5, 2)
+    return dict(cmap='viridis', vmin=0), None
+
+
+def fit_statistics(data, predicted, sigma):
+    """Same measured coordinates and SAME linear units; no fitted rescaling."""
+    residual = (data-predicted)/sigma
+    high_snr = np.abs(data)/sigma >= 5
+    phase_error = np.rad2deg(np.angle(data*np.conj(predicted)))
+    return dict(count=len(data),
+                measured_peak_amplitude=float(np.abs(data).max()),
+                predicted_peak_amplitude=float(np.abs(predicted).max()),
+                predicted_over_measured_peak=float(np.abs(predicted).max()/np.abs(data).max()) if np.abs(data).max() > 0 else None,
+                mean_squared_standardized_quadrature_residual=float(np.mean(np.abs(residual)**2)/2),
+                real_residual_mean_sigma=float(residual.real.mean()),
+                imag_residual_mean_sigma=float(residual.imag.mean()),
+                complex_rmse=float(np.sqrt(np.mean(np.abs(data-predicted)**2))),
+                amplitude_rmse=float(np.sqrt(np.mean((np.abs(data)-np.abs(predicted))**2))),
+                high_snr_count=int(high_snr.sum()),
+                high_snr_phase_rmse_deg=float(np.sqrt(np.mean(phase_error[high_snr]**2))) if high_snr.any() else None)
+
+
+def plot_saved_results(source, output, args):
+    """Replot compressed summary products; never rerun MCMC or load field draws."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    source, output = Path(source), Path(output)
+    required = ['summary.json', 'posterior_aperture.npz', 'posterior_beam.npz',
+                'beam_residuals.csv', 'posterior_trace.csv']
+    for name in required:
+        if not (source/name).exists():
+            raise ValueError(f'Replot needs {source/name}')
+    summary = json.loads((source/'summary.json').read_text(encoding='utf-8'))
+    residual_table = pd.read_csv(source/'beam_residuals.csv')
+    trace = pd.read_csv(source/'posterior_trace.csv')
+    data = residual_table.data_real.to_numpy()+1j*residual_table.data_imag.to_numpy()
+    predicted = residual_table.predicted_real.to_numpy()+1j*residual_table.predicted_imag.to_numpy()
+    sigma = residual_table.sigma.to_numpy()
+    peak = float(np.max(np.abs(data)))
+    if peak <= 0:
+        raise ValueError('Measured beam has no positive peak')
+    metrics = fit_statistics(data, predicted, sigma)
+    rms_angle = np.hypot(residual_table.Az_Offset, residual_table.El_Offset).to_numpy()
+    region_metrics = {'all': metrics}
+    metrics['measured_peak_offset_arcmin'] = residual_table.loc[int(np.argmax(np.abs(data))), ['Az_Offset', 'El_Offset']].to_list()
+    metrics['predicted_peak_offset_arcmin'] = residual_table.loc[int(np.argmax(np.abs(predicted))), ['Az_Offset', 'El_Offset']].to_list()
+    for name, select in [('within_12arcmin', rms_angle <= 12), ('outside_12arcmin', rms_angle > 12)]:
+        if select.any():
+            region_metrics[name] = fit_statistics(data[select], predicted[select], sigma[select])
+    output.mkdir(parents=True, exist_ok=True)
+    (output/'pdf').mkdir(exist_ok=True)
+    (output/'beam_fit_quality.json').write_text(json.dumps(region_metrics, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+    print(f'[FIT] same-coordinate mean squared standardized quadrature residual='
+          f'{metrics["mean_squared_standardized_quadrature_residual"]:.4g}; '
+          f'amplitude RMSE={metrics["amplitude_rmse"]:.6g}', flush=True)
+    if metrics['mean_squared_standardized_quadrature_residual'] > 2:
+        print('[WARN] Data-model residuals exceed the assumed noise scale substantially. '
+              'Inspect residual maps/calibration/trajectory/prior; more MCMC iterations alone may not fix model mismatch.', flush=True)
+    print('[PLOT] Comparison panels: left measured, right model at identical coordinates; '
+          'same measured peak for BOTH dB references. Slice dots=data, solid line=model.', flush=True)
     plt.rcParams.update({'font.size': 16, 'axes.labelsize': 18, 'xtick.labelsize': 16, 'ytick.labelsize': 16})
+    def save(fig, name):
+        fig.savefig(output/f'{name}.png', dpi=160, bbox_inches='tight')
+        fig.savefig(output/'pdf'/f'{name}.pdf', bbox_inches='tight')
+        plt.close(fig)
+    def maps(values, labels, kinds, name, extent, aperture=False):
+        fig, axes = plt.subplots(1, len(values), figsize=(7*len(values), 6), squeeze=False)
+        for ax, value, label, kind in zip(axes.ravel(), values, labels, kinds):
+            style, ticks = display_style(kind, args.db_min, args.surface_limit_mm)
+            im = ax.imshow(value, origin='lower', extent=extent, aspect='equal', interpolation='nearest', **style)
+            ax.set_xlabel('x [m]' if aperture else 'Az offset [arcmin]')
+            ax.set_ylabel('y [m]' if aperture else 'El offset [arcmin]')
+            ax.set_box_aspect(1)
+            fig.colorbar(im, ax=ax, shrink=.8, label=label, ticks=ticks)
+        fig.tight_layout()
+        save(fig, name)
+    def db(values, reference):
+        return 20*np.log10(np.maximum(np.abs(values)/reference, 1e-15))
+    with np.load(source/'posterior_aperture.npz') as ap:
+        support, axis = ap['support'], ap['x_axis']
+        dx = float(axis[1]-axis[0])
+        diameter = dx*len(axis)
+        extent = [-diameter/2, diameter/2]*2
+        def image(value):
+            grid = np.full(support.shape, np.nan)
+            grid[support] = value
+            return grid
+        amp, mean = ap['amplitude_mean'], ap['field_mean']
+        maps([image(db(amp, amp.max())), image(np.rad2deg(ap['phase_mean_rad']))],
+             ['Amplitude [dB]', 'Phase [deg]'], ['db', 'phase'], 'aperture_mean', extent, True)
+        maps([image(ap['amplitude_sd']), image(np.rad2deg(ap['phase_circular_sd_rad']))],
+             ['Amplitude SD', 'Circular phase SD [deg]'], ['sd', 'sd'], 'aperture_uncertainty', extent, True)
+        maps([image(ap['surface_mean_mm']), image(ap['surface_sd_mm'])],
+             ['Surface error mean [mm]', 'Surface error SD [mm]'], ['surface', 'sd'], 'surface_posterior', extent, True)
+        if (source/'demo_truth.npz').exists():
+            with np.load(source/'demo_truth.npz') as truth:
+                maps([image(np.abs(truth['field'])), image(np.abs(mean-truth['field']))],
+                     ['True amplitude', 'Complex-field absolute error'], ['sd', 'sd'], 'demo_recovery', extent, True)
+        field_count = int(support.sum())
+    with np.load(source/'posterior_beam.npz') as beam:
+        azaxis, elaxis = beam['az_arcmin'], beam['el_arcmin']
+        extent = [azaxis[0], azaxis[-1], elaxis[0], elaxis[-1]]
+        maps([db(beam['complex_mean'], peak), np.rad2deg(np.angle(beam['complex_mean']))],
+             ['Amplitude [dB]', 'Phase [deg]'], ['db', 'phase'], 'beam_mean', extent)
+        maps([beam['amplitude_sd']], ['Amplitude SD'], ['sd'], 'beam_uncertainty', extent)
+    # Raw scatter avoids introducing a second interpolation model in fit checks.
+    az, el = residual_table.Az_Offset.to_numpy(), residual_table.El_Offset.to_numpy()
+    bound = max(np.max(np.abs(az)), np.max(np.abs(el)))
+    def point_maps(values, label, kind, name, zoom=None):
+        fig, axes = plt.subplots(1, len(values), figsize=(7*len(values), 6), squeeze=False)
+        for ax, value in zip(axes.ravel(), values):
+            style, ticks = display_style(kind, args.db_min, args.surface_limit_mm)
+            im = ax.scatter(az, el, c=value, marker='s', s=16 if zoom is None else 40,
+                            linewidths=0, **style)
+            half = bound if zoom is None else zoom/2
+            ax.set_xlim(-half, half)
+            ax.set_ylim(-half, half)
+            ax.set_aspect('equal')
+            ax.set_box_aspect(1)
+            ax.set_xlabel('Az offset [arcmin]')
+            ax.set_ylabel('El offset [arcmin]')
+            fig.colorbar(im, ax=ax, shrink=.8, label=label, ticks=ticks)
+        fig.tight_layout()
+        save(fig, name)
+    point_maps([db(data, peak), db(predicted, peak)], 'Amplitude [dB]', 'db', 'beam_data_model_db')
+    point_maps([db(data, peak), db(predicted, peak)], 'Amplitude [dB]', 'db',
+               'beam_data_model_db_zoom', args.zoom_size)
+    point_maps([np.rad2deg(np.angle(data)), np.rad2deg(np.angle(predicted))],
+               'Phase [deg]', 'phase', 'beam_data_model_phase')
+    standardized = (data-predicted)/sigma
+    point_maps([standardized.real, standardized.imag], 'Residual / sigma', 'residual', 'beam_standardized_residuals')
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    selected_counts = {}
+    for col, (coord, cross, axis_label) in enumerate([(az, el, 'Az'), (el, az, 'El')]):
+        # Do not snap PRD coordinates; state the exact cross-axis strip width.
+        select = np.abs(cross) <= args.slice_half_width
+        select &= np.abs(coord) <= args.zoom_size/2
+        order = np.argsort(coord[select])
+        selected_counts[axis_label] = int(select.sum())
+        location, measured, model = coord[select][order], data[select][order], predicted[select][order]
+        axes[0, col].plot(location, db(measured, peak), 'o', color='black', markersize=3)
+        axes[0, col].plot(location, db(model, peak), '-', color='black', linewidth=1)
+        measured_phase = np.rad2deg(np.angle(measured))
+        model_phase = np.rad2deg(np.angle(model))
+        if len(model_phase):
+            model_phase[np.r_[False, np.abs(np.diff(model_phase)) > 180]] = np.nan
+        axes[1, col].plot(location, measured_phase, 'o', color='black', markersize=3)
+        axes[1, col].plot(location, model_phase, '-', color='black', linewidth=1)
+        axes[0, col].set_ylim(args.db_min, 1)
+        axes[1, col].set_ylim(-180, 180)
+        for row in (0, 1):
+            axes[row, col].set_xlim(-args.zoom_size/2, args.zoom_size/2)
+            axes[row, col].set_xlabel(f'{axis_label} offset [arcmin]')
+        axes[0, col].set_ylabel('Amplitude [dB]')
+        axes[1, col].set_ylabel('Phase [deg]')
+        if not select.any():
+            print(f'[WARN] No {axis_label} slice points in cross-axis strip +/-{args.slice_half_width:g} arcmin.', flush=True)
+    fig.tight_layout()
+    save(fig, 'beam_fit_slices')
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    u = np.linspace(-5, 5, 300)
+    for ax, value in zip(axes, [standardized.real, standardized.imag]):
+        ax.hist(value, bins=60, density=True, histtype='step', color='black')
+        ax.plot(u, stats.norm.pdf(u), color='black', linewidth=1)
+        ax.set_xlabel('Residual / sigma')
+        ax.set_ylabel('Density')
+    fig.tight_layout()
+    save(fig, 'beam_residual_histogram')
+    fig, axes = plt.subplots(4, 1, figsize=(10, 12))
+    keys = ['length_m', 'prior_scale', 'rms_full_mm', 'rms_annulus_mm']
+    labels = ['Smoothness ell [m]', 'Field prior scale tau', 'Derived full RMS [mm]', 'Derived annulus RMS [mm]']
+    parameter_rows = []
+    for ax, key, label in zip(axes, keys, labels):
+        for chain, frame in trace.groupby('chain'):
+            ax.plot(frame.draw, frame[key], color='black', alpha=.45, linewidth=.7)
+        ax.set_ylabel(label)
+        quantiles = np.percentile(trace[key], [16, 50, 84])
+        parameter_rows.append(dict(parameter=key, role='MH hyperparameter' if key in keys[:2] else 'derived statistic',
+                                   p16=quantiles[0], median=quantiles[1], p84=quantiles[2]))
+    axes[-1].set_xlabel('Retained draw per chain')
+    fig.tight_layout()
+    save(fig, 'mcmc_trace')
+    pd.DataFrame(parameter_rows).to_csv(output/'parameter_summary.csv', index=False)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, key in zip(axes, keys[2:]):
+        ax.hist(trace[key], bins=40, density=True, histtype='step', color='black')
+        ax.set_xlabel('Surface RMS [mm]')
+        ax.set_ylabel('Posterior density')
+    fig.tight_layout()
+    save(fig, 'surface_rms_posterior')
+    model_description = dict(complex_aperture_pixels=field_count, real_field_unknowns=2*field_count,
+        mh_parameters={'log_ell': 'log smoothness length [m]', 'log_tau': 'log field coefficient prior scale'},
+        conditional_parameters=f'{field_count} complex aperture coefficients drawn jointly per retained step',
+        derived_not_sampled=['surface RMS', 'surface height after phase unwrap and tilt removal', 'predicted beam pattern'],
+        fixed=['measured beam values and positions', 'sigma=Amp/SNR with documented zero-SNR fill',
+               'ON calibration', 'aperture support', 'frequency'],
+        hyperpriors={name: summary['parameters'].get(name) for name in ['length_prior_m', 'length_log_sd', 'scale_prior', 'scale_log_sd']},
+        noise_sigma_override=summary['parameters'].get('noise_sigma'),
+        note='The sampler does not jitter observed amplitudes/phases as in noise-propagation Monte Carlo.')
+    (output/'inference_parameters.json').write_text(json.dumps(model_description, indent=2)+'\n', encoding='utf-8')
+    (output/'plot_settings.json').write_text(json.dumps(dict(source=str(source.resolve()),
+        db_min=args.db_min, surface_limit_mm=args.surface_limit_mm,
+        shared_beam_reference_measured_peak=peak, zoom_size_arcmin=args.zoom_size,
+        slice_cross_half_width_arcmin=args.slice_half_width, slice_point_counts=selected_counts,
+        comparison_panels='left measured, right model at same measured coordinates',
+        phase_comparison='all points; low-amplitude phases may be uninformative',
+        continuous_beam='instantaneous prediction; motion-average training predictions are in the point comparisons'), indent=2)+'\n', encoding='utf-8')
+    print(f'[PARAMETERS] MH samples log(ell), log(tau); jointly draws {field_count} complex field coefficients '
+          f'({2*field_count} real unknowns). RMS is derived. See inference_parameters.json and parameter_summary.csv.', flush=True)
+    return region_metrics
+
+
+def save_results(args, axis, x, y, support, dx, basis, coefficients, parameters, used, data, sigma, design, wave, acceptances, truth):
     shape = coefficients.shape[:2]
     # Coefficients are in the graph eigenbasis; output fields are native aperture pixels.
     fields = coefficients.reshape(-1, basis.shape[0])@basis.T
@@ -455,49 +678,6 @@ def save_results(args, axis, x, y, support, dx, basis, coefficients, parameters,
     if np.any(np.percentile(circular_sd[full], 95) > .5):
         print('[WARN] Large aperture phase uncertainty: surface unwrapping and Gaussian summary may be unreliable.', flush=True)
     (args.output/'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False)+'\n')
-    pdf = args.output/'pdf'
-    pdf.mkdir(exist_ok=True)
-    def save(fig, name):
-        fig.savefig(args.output/f'{name}.png', dpi=160, bbox_inches='tight')
-        fig.savefig(pdf/f'{name}.pdf', bbox_inches='tight')
-        plt.close(fig)
-    def maps(values, labels, name, extent, aperture=False):
-        fig, axes = plt.subplots(1, len(values), figsize=(7*len(values), 6), squeeze=False)
-        for ax, value, label in zip(axes.ravel(), values, labels):
-            im = ax.imshow(value, origin='lower', extent=extent, aspect='equal', cmap='viridis')
-            ax.set_xlabel('x [m]' if aperture else 'Az offset [arcmin]')
-            ax.set_ylabel('y [m]' if aperture else 'El offset [arcmin]')
-            ax.set_box_aspect(1)
-            fig.colorbar(im, ax=ax, shrink=.8, label=label)
-        fig.tight_layout()
-        save(fig, name)
-    def image(vector):
-        grid = np.full(support.shape, np.nan)
-        grid[support] = vector
-        return grid
-    ext = [-args.antenna/2, args.antenna/2]*2
-    amp = np.abs(fields).mean(axis=0)
-    maps([image(20*np.log10(np.maximum(amp/amp.max(), 1e-12))), image(np.rad2deg(circular_mean))],
-         ['Amplitude [dB]', 'Phase [deg]'], 'aperture_mean', ext, True)
-    maps([image(np.abs(fields).std(axis=0, ddof=1)), image(np.rad2deg(circular_sd))],
-         ['Amplitude SD', 'Circular phase SD [deg]'], 'aperture_uncertainty', ext, True)
-    maps([image(surface.mean(axis=0)), image(surface.std(axis=0, ddof=1))],
-         ['Surface error mean [mm]', 'Surface error SD [mm]'], 'surface_posterior', ext, True)
-    fig, axes = plt.subplots(4, 1, figsize=(10, 12))
-    for ax, key in zip(axes, ['length_m', 'prior_scale', 'rms_full_mm', 'rms_annulus_mm']):
-        for _, frame in trace.groupby('chain'):
-            ax.plot(frame.draw, frame[key], color='black', alpha=.45, linewidth=.7)
-        ax.set_ylabel(key)
-    axes[-1].set_xlabel('Retained draw per chain')
-    fig.tight_layout()
-    save(fig, 'mcmc_trace')
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, values in zip(axes, [rms_full, rms_annulus]):
-        ax.hist(values.ravel(), bins=40, histtype='step', color='black', density=True)
-        ax.set_xlabel('Surface RMS [mm]')
-        ax.set_ylabel('Posterior density')
-    fig.tight_layout()
-    save(fig, 'surface_rms_posterior')
     # Continuous beam is the forward transform of posterior aperture samples.
     n = args.beam_grid
     azaxis = np.linspace(used.Az_Offset.min(), used.Az_Offset.max(), n)
@@ -514,12 +694,9 @@ def save_results(args, axis, x, y, support, dx, basis, coefficients, parameters,
     beam_amp_sd = beam_amp_sd.reshape(n, n)
     np.savez_compressed(args.output/'posterior_beam.npz', az_arcmin=azaxis, el_arcmin=elaxis,
                         complex_mean=beam_mean, amplitude_sd=beam_amp_sd, uncertainty_draw_count=len(chosen))
-    extent = [azaxis[0], azaxis[-1], elaxis[0], elaxis[-1]]
-    maps([20*np.log10(np.maximum(np.abs(beam_mean)/np.abs(beam_mean).max(), 1e-4)), np.rad2deg(np.angle(beam_mean))],
-         ['Amplitude [dB]', 'Phase [deg]'], 'beam_mean', extent)
-    maps([beam_amp_sd], ['Amplitude SD'], 'beam_uncertainty', extent)
-    if truth is not None:
-        maps([image(np.abs(truth)), image(np.abs(mean-truth))], ['True amplitude', 'Complex-field absolute error'], 'demo_recovery', ext, True)
+    fit = plot_saved_results(args.output, args.output, args)
+    summary['fit_quality'] = fit
+    (args.output/'summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False)+'\n')
     return summary
 
 
@@ -530,8 +707,15 @@ def main(argv=None):
         p.print_help()
         return 0
     args = p.parse_args(argv)
-    if bool(args.input) == bool(args.demo):
-        p.error('specify exactly one of --in or --demo')
+    if sum(map(bool, [args.input, args.demo, args.replot])) != 1:
+        p.error('specify exactly one of --in, --demo, or --replot')
+    if not np.isfinite(args.db_min) or args.db_min >= 0:
+        p.error('--db-min must be finite and negative')
+    for key in ['surface_limit_mm', 'zoom_size', 'slice_half_width']:
+        if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
+            p.error(f'--{key.replace("_", "-")} must be finite and positive')
+    if args.replot and args.replot.resolve() == args.output.resolve():
+        p.error('--replot requires a different --out to preserve source results')
     for key in ['frequency_ghz', 'on_length', 'length_prior_m', 'length_log_sd', 'scale_prior', 'scale_log_sd', 'proposal_sd']:
         if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
             p.error(f'--{key.replace("_", "-")} must be finite and positive')
@@ -564,6 +748,10 @@ def main(argv=None):
         sys.stdout, sys.stderr = Tee(oldout, log), Tee(olderr, log)
         try:
             start = time.monotonic()
+            if args.replot:
+                plot_saved_results(args.replot, args.output, args)
+                print(f'[INFO] Replotted saved results without MCMC: {args.output}', flush=True)
+                return 0
             truth = demo(args) if args.demo else None
             all_rows, used, data, sigma, rates = read_data(args)
             all_rows.to_csv(args.output/'input_calibration.csv', index=False)
@@ -573,6 +761,7 @@ def main(argv=None):
                 raise ValueError('Offsets exceed aperture-grid Nyquist range; increase --grid-size')
             print(f'[INFO] {len(data)} samples; {support.sum()} complex aperture pixels; dx={dx:.4g} m', flush=True)
             print('[INFO] Fixed ON calibration; independent quadrature Gaussian noise; dense Cholesky per MCMC proposal.', flush=True)
+            print(f'[PARAMETERS] MH: log(ell) and log(tau); conditional draws: {support.sum()} complex aperture coefficients. Observed beam and ON calibration stay fixed; RMS is derived.', flush=True)
             eig, basis = smooth_basis(support, dx)
             f = fourier_operator(used.Az_Offset, used.El_Offset, x[support], y[support], wave, dx,
                                  length=used.Length.to_numpy(), rates=rates)

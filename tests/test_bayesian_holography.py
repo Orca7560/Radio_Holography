@@ -75,6 +75,25 @@ class BayesianTests(unittest.TestCase):
         independent[0] += 3
         self.assertGreater(bh.diagnostics(independent)['rank_split_rhat'], 1.1)
 
+    def test_display_style_matches_holography(self):
+        style, ticks = bh.display_style('db')
+        self.assertEqual(style, dict(cmap='inferno', vmin=-45., vmax=0))
+        np.testing.assert_array_equal(ticks, [-40,-30,-20,-10,0])
+        style, ticks = bh.display_style('phase')
+        self.assertEqual(style, dict(cmap='twilight', vmin=-180, vmax=180))
+        np.testing.assert_array_equal(ticks, np.arange(-180,181,60))
+        self.assertEqual(bh.display_style('surface')[0], dict(cmap='coolwarm', vmin=-3., vmax=3.))
+        self.assertEqual(bh.display_style('sd')[0], dict(cmap='viridis', vmin=0))
+
+    def test_fit_statistics_do_not_normalize_away_gain_error(self):
+        data = np.array([1+0j, .1+0.1j])
+        fit = bh.fit_statistics(data, data/2, np.array([.1,.1]))
+        self.assertAlmostEqual(fit['predicted_over_measured_peak'], .5)
+        self.assertGreater(fit['mean_squared_standardized_quadrature_residual'], 1)
+        identical = bh.fit_statistics(data, data, np.array([.1,.1]))
+        self.assertEqual(identical['complex_rmse'], 0)
+        self.assertEqual(identical['mean_squared_standardized_quadrature_residual'], 0)
+
     def test_zero_snr_uses_mean_sigma_at_matching_length(self):
         table = pd.DataFrame(dict(Epoch=['a','b','c','d','e','f'],
                                   Length=[.5,.5,.5,.5,10,10],
