@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+import json
 from types import SimpleNamespace
 import numpy as np
 import pandas as pd
@@ -74,6 +76,79 @@ class BayesianTests(unittest.TestCase):
         self.assertGreater(good['bulk_ess'], 4000)
         independent[0] += 3
         self.assertGreater(bh.diagnostics(independent)['rank_split_rhat'], 1.1)
+
+    def test_backend_cpu_keeps_existing_calculation(self):
+        model, f, d, sigma, eig = self.model()
+        args = bh.parser().parse_args(['--in', 'placeholder'])
+        args.length_prior_m, args.scale_prior = 2., 1.
+        with mock.patch.object(bh, 'CUDAGaussianAperture', side_effect=AssertionError('CPU must not import CUDA')):
+            chosen = bh.choose_backend(f, d, sigma, eig, args)
+        a, b = model.conditional(np.log([1.,1.])), chosen.conditional(np.log([1.,1.]))
+        self.assertEqual(a[0], b[0])
+        np.testing.assert_array_equal(a[1], b[1])
+        self.assertEqual(args.backend_info['backend'], 'cpu')
+
+    def test_auto_backend_times_and_validates_before_selection(self):
+        model, f, d, sigma, eig = self.model()
+        class FakeGPU(bh.GaussianAperture):
+            def __init__(self, *a):
+                super().__init__(*a)
+                self.info = dict(backend='cuda', gpu_name='test double')
+            def host(self, value):
+                return value
+        args = bh.parser().parse_args(['--in', 'placeholder', '--backend', 'auto'])
+        with tempfile.TemporaryDirectory() as tmp:
+            args.output = Path(tmp)
+            timing = [dict(conditional_median_seconds=2.,retained_draw_median_seconds=.1),
+                      dict(conditional_median_seconds=.5,retained_draw_median_seconds=.1)]
+            with mock.patch.object(bh, 'CUDAGaussianAperture', FakeGPU), mock.patch.object(bh, 'time_backend', side_effect=timing):
+                chosen = bh.choose_backend(f, d, sigma, eig, args)
+            self.assertIsInstance(chosen, FakeGPU)
+            report = json.loads((args.output/'backend_benchmark.json').read_text())
+            self.assertEqual(report['selected_backend'], 'cuda')
+            self.assertTrue(report['numerics']['passed'])
+            self.assertGreater(report['estimated_inner_loop_cpu_over_cuda_ratio'], 1)
+            with mock.patch.object(bh, 'CUDAGaussianAperture', FakeGPU), mock.patch.object(bh, 'time_backend', side_effect=timing), mock.patch.object(bh, 'compare_backend_numerics', return_value={'passed':False}):
+                chosen = bh.choose_backend(f, d, sigma, eig, args)
+            self.assertEqual(args.backend_info['backend'], 'cpu')
+            self.assertNotIsInstance(chosen, FakeGPU)
+
+    def test_missing_cuda_auto_falls_back_but_explicit_cuda_errors(self):
+        _, f, d, sigma, eig = self.model()
+        args = bh.parser().parse_args(['--in','placeholder','--backend','auto'])
+        with tempfile.TemporaryDirectory() as tmp:
+            args.output = Path(tmp)
+            with mock.patch.object(bh, 'CUDAGaussianAperture', side_effect=RuntimeError('no CUDA')):
+                self.assertIsInstance(bh.choose_backend(f,d,sigma,eig,args), bh.GaussianAperture)
+                args.backend = 'cuda'
+                with self.assertRaisesRegex(RuntimeError, 'no CUDA'):
+                    bh.choose_backend(f,d,sigma,eig,args)
+
+    def test_numerical_check_rejects_changed_posterior(self):
+        cpu, *_ = self.model()
+        class BadGPU:
+            host = staticmethod(np.asarray)
+            draw = staticmethod(bh.GaussianAperture.draw)
+            def conditional(self, point):
+                logp, mean, chol = cpu.conditional(point)
+                return logp, mean+1, chol
+        check = bh.compare_backend_numerics(cpu, BadGPU(), [np.log([1.,1.]), np.log([2.,1.])])
+        self.assertFalse(check['passed'])
+
+    def test_real_cuda_matches_cpu_when_available(self):
+        try:
+            import cupy as cp
+            if cp.cuda.runtime.getDeviceCount() < 1:
+                self.skipTest('No CUDA device')
+        except Exception:
+            self.skipTest('CuPy/CUDA hardware unavailable')
+        cpu, f, d, sigma, eig = self.model()
+        args = bh.parser().parse_args(['--in','placeholder'])
+        args.length_prior_m = 2.
+        gpu = bh.CUDAGaussianAperture(f,d,sigma,eig,args)
+        check = bh.compare_backend_numerics(cpu,gpu,[np.log([1.,1.]),np.log([2.,.7])])
+        self.assertTrue(check['passed'], check)
+        self.assertEqual(gpu.gram.dtype, cp.complex128)
 
     def test_display_style_matches_holography(self):
         style, ticks = bh.display_style('db')
