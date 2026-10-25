@@ -244,3 +244,82 @@ Windowsのコマンドプロンプトでも同じ一行のコマンドを使え�
 これは測定したAmp/Phaseを雑音の範囲で振り直す通常の誤差伝播MCとは異なります。測定値は固定し、それを説明できる未知の開口面電場の分布を求めます。
 
 `inference_parameters.json` に未知数の個数、探索方法、固定量、事前分布設定を保存します。`parameter_summary.csv` にはell/tauとRMSの役割・中央値・16/84パーセンタイルを保存します。`mcmc_trace.png` の最初の2段が探索パラメータ、下の2段が電場から計算したRMSです。
+
+
+## NVIDIA GPUを使う（RTX 4060 Ti等、オプション）
+
+行列のGram行列作成、各MCMC提案のCholesky分解・三角行列求解、電場の条件付き生成にCuPy/CUDAを使う経路を追加しました。行列と分解結果をGPUメモリに保持し、各提案では尤度のスカラー、保持ステップでは係数ベクトルだけをCPUへ戻します。乱数自体はCPUと同じNumPyの方式で生成します。
+
+**精度はCPU版と同じcomplex128/float64です。** 速度のためにcomplex64/float32へ変更しません。GPUの単精度やAI向け性能が高くても、この倍精度行列計算がCPUより速いとは限りません。倍率は実測で判断してください。描画、位相アンラップ、鏡面誤差評価、保存、最初の固有基底とフーリエ行列の作成はCPUに残ります。GPUとCPUの丸め誤差によりMHの採否が異なり、その後のチェーンが一致しなくなる可能性はあります。
+
+### Windowsでの導入例
+
+NVIDIAドライバーを用意し、スクリプトと同じPythonにインストールします。
+
+```bat
+nvidia-smi
+python -m pip install "cupy-cuda12x[ctk]"
+python -c "import cupy as cp; cp.show_config(); print(cp.cuda.runtime.getDeviceCount())"
+```
+
+`[ctk]` はCUDAライブラリも依存として導入する指定です。すでにCUDA Toolkitを用意している場合は、バージョンに対応した `cupy-cuda12x` または `cupy-cuda13x` を使えます。複数種類のCuPyパッケージを同じ環境へ重ねて導入しないでください。ドライバーと利用するCUDAの互換性はCuPyの公式手順を参照してください。
+
+公式情報:
+- https://docs.cupy.dev/en/stable/install.html
+- https://docs.cupy.dev/en/stable/reference/generated/cupy.linalg.cholesky.html
+- https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.linalg.solve_triangular.html
+
+### まず実データで短い速度比較だけを行う
+
+```bat
+python bayesian_holography.py --in beam_184.txt --out benchmark_4060ti --antenna 32 --grid-size 48 --backend cuda --benchmark-backends --benchmark-repeats 5 --iterations 10000 --warmup 2000
+```
+
+このコマンドはMCMCを実行しません。既定の事前分布の中央値とその周辺の3組でウォームアップした後、CPU/GPUの条件付き分布計算と電場1試行の生成をそれぞれ計測します。初回のライブラリ初期化・データ転送を含むモデル準備時間は別に保存します。iterations/warmup/thinは、MCMCで電場を保持する割合を推定するために使います。
+
+`backend_benchmark.json` の読み方:
+
+| 項目 | 内容 |
+|---|---|
+| `cpu.conditional_median_seconds` | CPUの1提案分の条件付き分布計算時間 |
+| `cuda.conditional_median_seconds` | GPUの同じ計算の時間。非同期処理を同期して測定 |
+| `retained_draw_median_seconds` | 電場1試行の生成時間。GPU版では係数のCPU転送も含む |
+| `estimated_inner_loop_cpu_over_cuda_ratio` | MCMC内部の計算時間比の概算。2ならGPUの内部計算は約2倍速い見込み。全処理が2倍速いという意味ではない |
+| `numerics` | CPU/GPUで対数事後確率の差、条件付き平均、同じ雑音を使った電場試行を比較 |
+| `cuda_device` | GPU名、搭載メモリ・空きメモリ、CuPyバージョン、数値精度 |
+| `cuda_error` | GPUが使えない場合の理由 |
+
+数値照合は対数事後確率の差の最大絶対誤差<=1e-3、平均と同一雑音試行の最大相対誤差<=1e-6を合格目安としています。これは有限個の試験点での実装照合であり、事後分布全体の一致を保証する試験ではありません。
+
+### GPUで本計算
+
+```bat
+python bayesian_holography.py --in beam_184.txt --out results_gpu --antenna 32 --grid-size 48 --chains 4 --iterations 10000 --warmup 2000 --backend cuda
+```
+
+明示的な `--backend cuda` はGPUを使えなければエラーにし、黙ってCPUへ切り替えません。まず上の比較コマンドを実行することを推奨します。GPU計算の対象が変わる場合も再比較してください。
+
+CPU/GPUの比較を行い、数値照合に合格して速い方を自動選択したい場合:
+
+```bat
+python bayesian_holography.py --in beam_184.txt --out results_auto --antenna 32 --grid-size 48 --chains 4 --iterations 10000 --warmup 2000 --backend auto
+```
+
+`auto` はGPU未導入・初期化失敗・比較で数値不一致・GPUの方が遅い場合にCPUを選びます。自動比較は両方の行列を作る初期コストがあり、計測条件や試験パラメータに依存します。選択後のMCMC途中にGPUエラーが起きた場合は停止し、途中からCPUへ切り替えてチェーンを継続することはしません。
+
+既定値は `--backend cpu` で、CuPyは不要です。
+
+| 追加オプション | 既定値 | 意味 |
+|---|---:|---|
+| `--backend {cpu,cuda,auto}` | cpu | 計算先 |
+| `--gpu-device N` | 0 | GPUの番号 |
+| `--benchmark-backends` | 無効 | 実データの行列で比較だけを行い、MCMCは実行しない |
+| `--benchmark-repeats N` | 5 | ウォームアップ後の時間計測の反復数 |
+
+### メモリと時間の確認
+
+主要なGPU配列の概算は起動時に表示します。実際の確保量にはCUDAライブラリの作業領域・メモリプール・Windowsの表示用途などが加わるため、確保成功の保証ではありません。GPUメモリが不足した場合は明確なエラーになります。CPU側には事後電場の全試行を保存するためのRAMも必要です。
+
+`backend_info.json` と `summary.json` のparameters.backend_infoに実際に選択した計算先を保存します。`timing.json` には入力処理、CPU固有基底、CPUフーリエ演算子、バックエンド準備、MCMC、CPU後処理の時間を記録し、GPU化できていない負荷を切り分けられます。
+
+実機CUDAテストは `tests/test_bayesian_holography.py` にあり、CuPyとCUDA GPUがある場合だけCPUとの数値照合を実行します。GPUがない環境ではこの1件をスキップします。CPU経路・自動選択・数値不一致の拒否・GPU未導入の処理はCPU環境でもテストします。

@@ -36,6 +36,10 @@ def parser():
     p.add_argument('--noise-sigma', type=float, help='override raw-data quadrature noise SD; otherwise Amp/SNR, with zero SNR filled by mean sigma at matching Length')
     p.add_argument('--scan-width', type=float, help='use offsets within +/- this value in both axes [arcmin]')
     p.add_argument('--motion-average', action='store_true', help='average a constant-rate scan over Length; coordinates must be midpoints')
+    p.add_argument('--backend', choices=('cpu', 'cuda', 'auto'), default='cpu', help='linear algebra backend; auto benchmarks CPU/CUDA and checks numerics')
+    p.add_argument('--gpu-device', type=int, default=0, help='CUDA device index')
+    p.add_argument('--benchmark-backends', action='store_true', help='benchmark CPU/CUDA with actual data, save report, do not run MCMC')
+    p.add_argument('--benchmark-repeats', type=int, default=5, help='warmed repeats per backend benchmark')
     p.add_argument('--chains', type=int, default=4)
     p.add_argument('--iterations', type=int, default=2000, help='iterations per chain, including warmup')
     p.add_argument('--warmup', type=int, default=500)
@@ -250,6 +254,192 @@ class GaussianAperture:
     def draw(mean, chol, rng):
         z = rng.normal(size=len(mean)) + 1j*rng.normal(size=len(mean))
         return mean + linalg.solve_triangular(chol.conj().T, z, lower=False, check_finite=False)
+
+
+class CUDAGaussianAperture:
+    """Optional CuPy complex128 backend; Gram/RHS/Cholesky stay on device."""
+    def __init__(self, design, data, sigma, eig, args):
+        try:
+            import cupy as cp
+            import cupyx
+            from cupyx.scipy.linalg import solve_triangular
+        except ImportError as error:
+            raise RuntimeError('CUDA backend needs CuPy. Install python -m pip install "cupy-cuda12x[ctk]" '
+                               'with a compatible NVIDIA driver; see GPU instructions.') from error
+        self.cp, self.cupyx, self.triangular = cp, cupyx, solve_triangular
+        self.device = cp.cuda.Device(args.gpu_device)
+        try:
+            with self.device:
+                props = cp.cuda.runtime.getDeviceProperties(args.gpu_device)
+                free, total = cp.cuda.runtime.memGetInfo()
+                name = props['name']
+                self.info = dict(backend='cuda', gpu_device=args.gpu_device,
+                                 gpu_name=name.decode() if isinstance(name, bytes) else str(name),
+                                 cupy_version=cp.__version__, device_total_bytes=int(total),
+                                 device_free_bytes_before_model=int(free), dtype='complex128/float64')
+                weighted = cp.asarray(design, dtype=cp.complex128)/cp.asarray(sigma, dtype=cp.float64)[:, None]
+                self.gram = weighted.conj().T@weighted
+                self.rhs = weighted.conj().T@cp.asarray(data/sigma, dtype=cp.complex128)
+                self.eig = cp.asarray(eig, dtype=cp.float64)
+                cp.cuda.get_current_stream().synchronize()
+        except Exception as error:
+            raise RuntimeError(f'CUDA initialization failed on device {args.gpu_device}: {error}. '
+                               'Check driver/CuPy installation and GPU memory; --backend cpu remains available.') from error
+        self.prior_mean = np.log([args.length_prior_m, args.scale_prior])
+        self.prior_sd = np.array([args.length_log_sd, args.scale_log_sd])
+
+    def conditional(self, log_parameters):
+        cp = self.cp
+        ell, tau = np.exp(log_parameters)
+        with self.device, self.cupyx.errstate(linalg='raise'):
+            q = (1 + ell**2*self.eig)**2/tau**2
+            precision = self.gram.copy()
+            index = cp.arange(len(q))
+            precision[index, index] += q
+            # cuSOLVER failures must reject the proposal, never silently return NaNs.
+            try:
+                chol = cp.linalg.cholesky(precision)
+                temp = self.triangular(chol, self.rhs, lower=True, check_finite=False)
+                mean = self.triangular(chol, temp, lower=True, trans='C', check_finite=False)
+            except cp.linalg.LinAlgError as error:
+                raise linalg.LinAlgError(str(error)) from error
+            prior = .5*np.sum(((log_parameters-self.prior_mean)/self.prior_sd)**2)
+            logp_device = (cp.log(q).sum() - 2*cp.log(chol.diagonal().real).sum()
+                           + .5*cp.vdot(self.rhs, mean).real - prior)
+            logp = float(logp_device.item())  # one scalar synchronization per MH step
+            if not np.isfinite(logp):
+                raise FloatingPointError('Nonfinite CUDA log posterior')
+        return logp, mean, chol
+
+    def draw(self, mean, chol, rng):
+        # Keep the same NumPy RNG convention as CPU; transfer only one noise vector
+        # and one retained coefficient vector, not full precision/Cholesky matrices.
+        z = rng.normal(size=len(mean)) + 1j*rng.normal(size=len(mean))
+        with self.device, self.cupyx.errstate(linalg='raise'):
+            value = mean + self.triangular(chol, self.cp.asarray(z), lower=True, trans='C', check_finite=False)
+            return self.cp.asnumpy(value)
+
+    def synchronize(self):
+        with self.device:
+            self.cp.cuda.get_current_stream().synchronize()
+
+    def host(self, value):
+        with self.device:
+            return self.cp.asnumpy(value)
+
+
+def backend_memory_estimate(n_samples, n_pixels):
+    """Conservative major-array estimate, NOT a CUDA allocation guarantee."""
+    return int(16*(3*n_samples*n_pixels+6*n_pixels*n_pixels)+256*1024**2)
+
+
+def compare_backend_numerics(cpu, gpu, points):
+    """Compare log-posterior differences (MH uses differences), means and draws."""
+    cpu_logp, gpu_logp, mean_errors, draw_errors = [], [], [], []
+    for i, point in enumerate(points):
+        a, b = cpu.conditional(point), gpu.conditional(point)
+        cpu_logp.append(a[0])
+        gpu_logp.append(b[0])
+        host_mean = gpu.host(b[1])
+        mean_errors.append(float(np.linalg.norm(a[1]-host_mean)/max(np.linalg.norm(a[1]), 1e-15)))
+        draw_a = cpu.draw(a[1], a[2], np.random.default_rng(12345+i))
+        draw_b = gpu.draw(b[1], b[2], np.random.default_rng(12345+i))
+        draw_errors.append(float(np.linalg.norm(draw_a-draw_b)/max(np.linalg.norm(draw_a), 1e-15)))
+    delta_error = float(np.max(np.abs((np.array(cpu_logp)-cpu_logp[0])-(np.array(gpu_logp)-gpu_logp[0]))))
+    mean_error, draw_error = max(mean_errors), max(draw_errors)
+    return dict(logp_difference_max_abs_error=delta_error,
+                posterior_mean_max_relative_error=mean_error,
+                fixed_noise_draw_max_relative_error=draw_error,
+                passed=bool(delta_error <= 1e-3 and mean_error <= 1e-6 and draw_error <= 1e-6),
+                tolerances=dict(logp_difference_abs=1e-3, posterior_mean_relative=1e-6, fixed_noise_draw_relative=1e-6))
+
+
+def time_backend(model, points, repeats):
+    # Warm both conditional and draw paths; synchronize CUDA to time completed work.
+    for point in points:
+        state = model.conditional(point)
+        model.draw(state[1], state[2], np.random.default_rng(100))
+    if hasattr(model, 'synchronize'):
+        model.synchronize()
+    conditional_times, draw_times = [], []
+    for i in range(repeats):
+        point = points[i % len(points)]
+        start = time.perf_counter()
+        state = model.conditional(point)
+        if hasattr(model, 'synchronize'):
+            model.synchronize()
+        conditional_times.append(time.perf_counter()-start)
+        rng = np.random.default_rng(101+i)
+        start = time.perf_counter()
+        model.draw(state[1], state[2], rng)
+        if hasattr(model, 'synchronize'):
+            model.synchronize()
+        draw_times.append(time.perf_counter()-start)
+    return dict(conditional_median_seconds=float(np.median(conditional_times)),
+                retained_draw_median_seconds=float(np.median(draw_times)),
+                repeats=repeats)
+
+
+def choose_backend(design, data, sigma, eig, args):
+    """Explicit cpu/cuda, or measured auto selection; benchmark never runs MCMC."""
+    estimate = backend_memory_estimate(*design.shape)
+    if args.backend == 'cpu' and not args.benchmark_backends:
+        args.backend_info = dict(backend='cpu', dtype='complex128/float64')
+        return GaussianAperture(design, data, sigma, eig, args)
+    print(f'[BACKEND] Major GPU arrays estimate: {estimate/1024**3:.2f} GiB '
+          '(additional libraries/workspace/display allocations may increase this).', flush=True)
+    if args.backend == 'cuda' and not args.benchmark_backends:
+        model = CUDAGaussianAperture(design, data, sigma, eig, args)
+        args.backend_info = dict(model.info, major_array_estimate_bytes=estimate)
+        print(f'[BACKEND] CUDA: {model.info["gpu_name"]}; complex128 precision', flush=True)
+        return model
+    # Only auto/benchmark pay for BOTH CPU and CUDA setup and timed probes.
+    start = time.perf_counter()
+    cpu = GaussianAperture(design, data, sigma, eig, args)
+    cpu_setup = time.perf_counter()-start
+    points = [cpu.prior_mean + v for v in [np.array([0.,0.]), np.array([.2,-.15]), np.array([-.2,.15])]]
+    report = dict(cpu_setup_seconds=cpu_setup, major_gpu_array_estimate_bytes=estimate,
+                  dtype='complex128/float64', cpu=time_backend(cpu, points, args.benchmark_repeats),
+                  n_samples=design.shape[0], n_complex_pixels=design.shape[1],
+                  note='Warmed conditional+draw timings, not end-to-end MCMC speedup. '
+                       'Setup, eigenbasis, trajectories, phase unwrap, file I/O and plotting are separate.')
+    gpu = None
+    try:
+        start = time.perf_counter()
+        gpu = CUDAGaussianAperture(design, data, sigma, eig, args)
+        report['cuda_setup_seconds'] = time.perf_counter()-start
+        report['cuda_device'] = gpu.info
+        report['numerics'] = compare_backend_numerics(cpu, gpu, points)
+        report['cuda'] = time_backend(gpu, points, args.benchmark_repeats)
+        # Weight draws by actual expected retention fraction of ALL MH iterations.
+        draws = len(range(args.warmup, args.iterations, args.thin))
+        weight = draws/args.iterations
+        cpu_step = report['cpu']['conditional_median_seconds'] + weight*report['cpu']['retained_draw_median_seconds']
+        gpu_step = report['cuda']['conditional_median_seconds'] + weight*report['cuda']['retained_draw_median_seconds']
+        report['estimated_inner_loop_cpu_over_cuda_ratio'] = float(cpu_step/gpu_step)
+        fast_cuda = gpu_step < cpu_step and report['numerics']['passed']
+        selected = 'cuda' if fast_cuda else 'cpu'
+        print(f'[BENCHMARK] CPU conditional={report["cpu"]["conditional_median_seconds"]:.6g}s, '
+              f'CUDA={report["cuda"]["conditional_median_seconds"]:.6g}s; '
+              f'inner-loop estimated CPU/CUDA ratio={cpu_step/gpu_step:.3g}; '
+              f'numerics passed={report["numerics"]["passed"]}', flush=True)
+    except Exception as error:
+        report['cuda_error'] = str(error)
+        selected = 'cpu'
+        print(f'[WARN] CUDA benchmark unavailable: {error}', flush=True)
+    if args.backend == 'cuda':
+        selected = 'cuda' if gpu is not None and report.get('numerics', {}).get('passed', False) and 'cuda' in report else 'unavailable'
+    report['selected_backend'] = selected
+    (args.output/'backend_benchmark.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n', encoding='utf-8')
+    if selected == 'unavailable':
+        raise RuntimeError('Requested CUDA backend failed benchmark/validation; see backend_benchmark.json')
+    args.backend_info = dict(backend=selected, dtype='complex128/float64',
+                             benchmark_report='backend_benchmark.json')
+    if selected == 'cuda':
+        args.backend_info.update(gpu.info)
+        return gpu
+    print('[BACKEND] Using CPU (auto selection or benchmark result).', flush=True)
+    return cpu
 
 
 def mcmc(model, args):
@@ -711,6 +901,10 @@ def main(argv=None):
         p.error('specify exactly one of --in, --demo, or --replot')
     if not np.isfinite(args.db_min) or args.db_min >= 0:
         p.error('--db-min must be finite and negative')
+    if args.gpu_device < 0 or args.benchmark_repeats < 1:
+        p.error('--gpu-device must be nonnegative and --benchmark-repeats positive')
+    if args.replot and args.benchmark_backends:
+        p.error('--replot and --benchmark-backends cannot be combined')
     for key in ['surface_limit_mm', 'zoom_size', 'slice_half_width']:
         if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
             p.error(f'--{key.replace("_", "-")} must be finite and positive')
@@ -748,6 +942,7 @@ def main(argv=None):
         sys.stdout, sys.stderr = Tee(oldout, log), Tee(olderr, log)
         try:
             start = time.monotonic()
+            stage_times = {}
             if args.replot:
                 plot_saved_results(args.replot, args.output, args)
                 print(f'[INFO] Replotted saved results without MCMC: {args.output}', flush=True)
@@ -762,13 +957,34 @@ def main(argv=None):
             print(f'[INFO] {len(data)} samples; {support.sum()} complex aperture pixels; dx={dx:.4g} m', flush=True)
             print('[INFO] Fixed ON calibration; independent quadrature Gaussian noise; dense Cholesky per MCMC proposal.', flush=True)
             print(f'[PARAMETERS] MH: log(ell) and log(tau); conditional draws: {support.sum()} complex aperture coefficients. Observed beam and ON calibration stay fixed; RMS is derived.', flush=True)
+            stage_times['input_and_geometry_seconds'] = time.monotonic()-start
+            mark = time.monotonic()
             eig, basis = smooth_basis(support, dx)
+            stage_times['cpu_eigenbasis_seconds'] = time.monotonic()-mark
+            mark = time.monotonic()
             f = fourier_operator(used.Az_Offset, used.El_Offset, x[support], y[support], wave, dx,
                                  length=used.Length.to_numpy(), rates=rates)
             design = f@basis
-            model = GaussianAperture(design, data, sigma, eig, args)
+            stage_times['cpu_forward_operator_seconds'] = time.monotonic()-mark
+            mark = time.monotonic()
+            model = choose_backend(design, data, sigma, eig, args)
+            stage_times['backend_setup_and_benchmark_seconds'] = time.monotonic()-mark
+            (args.output/'backend_info.json').write_text(json.dumps(args.backend_info, indent=2)+'\n', encoding='utf-8')
+            if args.benchmark_backends:
+                stage_times['total_seconds'] = time.monotonic()-start
+                (args.output/'timing.json').write_text(json.dumps(stage_times, indent=2)+'\n', encoding='utf-8')
+                print(f'[INFO] Benchmark complete without MCMC: {args.output / "backend_benchmark.json"}', flush=True)
+                return 0
+            print(f'[BACKEND] Selected {args.backend_info["backend"]}; complex128/float64', flush=True)
+            mark = time.monotonic()
             coefficients, parameters, acceptances = mcmc(model, args)
+            stage_times['mcmc_and_checkpoints_seconds'] = time.monotonic()-mark
+            mark = time.monotonic()
             save_results(args, axis, x, y, support, dx, basis, coefficients, parameters, used, data, sigma, design, wave, acceptances, truth)
+            stage_times['cpu_postprocessing_and_plots_seconds'] = time.monotonic()-mark
+            stage_times['total_seconds'] = time.monotonic()-start
+            (args.output/'timing.json').write_text(json.dumps(stage_times, indent=2)+'\n', encoding='utf-8')
+            print(f'[TIMING] MCMC={stage_times["mcmc_and_checkpoints_seconds"]:.1f}s; postprocessing={stage_times["cpu_postprocessing_and_plots_seconds"]:.1f}s; see timing.json', flush=True)
             print(f'[INFO] Finished in {time.monotonic()-start:.1f} s; results: {args.output}', flush=True)
         except Exception:
             import traceback
