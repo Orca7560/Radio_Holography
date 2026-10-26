@@ -1510,6 +1510,26 @@ for ax in axes:
 save_figure(fig, os.path.join(OUT_DIR, "aperture_phase_comparison.png"), dpi=150) # ★点線あり保存
 plt.close(fig)
 
+# 同じ位相データを共通の狭い色範囲（±90 deg）で比較する。
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+for ax, values in zip(axes, (phase_before_display, phase_tilt_display)):
+    im = ax.imshow(values, extent=extent_aperture, cmap="twilight",
+                   vmin=-90, vmax=90, origin="lower")
+    fig.colorbar(im, ax=ax, label="Phase [deg]",
+                 ticks=np.arange(-90, 91, 30), extend="both")
+    ax.set_xlabel("x [m]")
+    ax.set_xlim(-20, 20)
+    ax.set_ylim(-20, 20)
+    format_aperture_axes(ax)
+axes[0].set_ylabel("y [m]")
+fig.tight_layout()
+save_figure(fig, os.path.join(OUT_DIR, "aperture_phase_comparison_narrow_no_circle.png"), dpi=150)
+for ax in axes:
+    ax.add_patch(plt.Circle((0, 0), D / 2, color="black", fill=False,
+                           linestyle="--", linewidth=1.5, alpha=0.7))
+save_figure(fig, os.path.join(OUT_DIR, "aperture_phase_comparison_narrow.png"), dpi=150)
+plt.close(fig)
+
 # ==========================================
 # チルト（傾き）除去の残差確認用 中央スライスプロット
 # ==========================================
