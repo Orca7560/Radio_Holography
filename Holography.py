@@ -463,6 +463,18 @@ def format_field_slice_figure(fig, axes, db_min):
                         hspace=0.10, wspace=0.32)
 
 
+def draw_aperture_radius_lines(ax, diameter, fixed_coordinate=0.0):
+    """Mark the antenna radius and the 32 m design illumination boundary."""
+    for position in (-diameter / 2, diameter / 2):
+        ax.axvline(position, color="black", linestyle="--", linewidth=1)
+    # The 0.9R uniform-illumination design is documented for the 32 m dish.
+    design_radius = 0.9 * diameter / 2
+    if diameter == 32 and abs(fixed_coordinate) < design_radius:
+        transition = np.sqrt(design_radius**2 - fixed_coordinate**2)
+        for position in (-transition, transition):
+            ax.axvline(position, color="black", linestyle=":", linewidth=1)
+
+
 def shade_aperture_slice_center(ax, fixed_coordinate, radius=3.0):
     """Shade the intersection of a cut with the central radius-3 m disk."""
     if abs(fixed_coordinate) < radius:
@@ -493,15 +505,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         ax.plot(coord, np.where(np.isfinite(values), values, np.nan),
                 "o-", color="black", markersize=3, linewidth=1.2)
         shade_aperture_slice_center(ax, fixed)
-        rim = np.sqrt(max(0.0, radius**2 - fixed**2))
-        for position in (-rim, rim):
-            ax.axvline(position, color="black", linestyle="--", linewidth=1)
-        # The cited 0.9R uniform-illumination design applies to the 32 m dish.
-        # On an off-centre cut the intersection is not at +/-0.9R.
-        if diameter == 32 and abs(fixed) < 0.9 * radius:
-            transition = np.sqrt((0.9 * radius)**2 - fixed**2)
-            for position in (-transition, transition):
-                ax.axvline(position, color="black", linestyle=":", linewidth=1)
+        draw_aperture_radius_lines(ax, diameter, fixed)
         ax.set_xlim(-radius - 2, radius + 2)
         ax.set_ylim(db_min, 2)
         ax.set_ylabel("Normalized amplitude [dB]")
@@ -521,6 +525,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             draw(axes[0], coord, values, fixed)
             axes[1].plot(coord, phase, "o-", color="black", markersize=3, linewidth=1.2)
             shade_aperture_slice_center(axes[1], fixed)
+            draw_aperture_radius_lines(axes[1], diameter, fixed)
             axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8)
             axes[1].set(ylabel="Phase [deg]", ylim=(-180, 180),
                         xlabel=f"{axis_name.lower()} [m]")
@@ -553,6 +558,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         ):
             ax.plot(coord, phase, "o-", color="black", markersize=3, linewidth=1.2)
             shade_aperture_slice_center(ax, fixed)
+            draw_aperture_radius_lines(ax, diameter, fixed)
             ax.set(xlabel=label, ylabel="Phase [deg]", ylim=(-180, 180))
             ax.grid(True, alpha=0.25)
         format_field_slice_figure(fig, axes, db_min)
@@ -1613,6 +1619,7 @@ if GENERATE_APERTURE_SLICES:
         axes[1].set_ylim(-180, 180)
         for ax in axes:
             shade_aperture_slice_center(ax, fixed_coord)
+            draw_aperture_radius_lines(ax, D, fixed_coord)
             ax.set_xlim(-D/2 - 1, D/2 + 1)
             ax.grid(True, linestyle='--', alpha=0.5)
         filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
