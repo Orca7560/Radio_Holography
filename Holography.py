@@ -448,6 +448,21 @@ def format_aperture_axes(ax):
     ax.yaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
 
 
+def format_field_slice_figure(fig, axes, db_min):
+    """Use identical vertical scales and panel heights for beam/aperture cuts."""
+    panels = np.asarray(axes).reshape(2, -1)
+    for ax in panels[0]:
+        ax.set_ylim(db_min, 2.0)
+        ax.yaxis.set_major_locator(MultipleLocator(10))
+    for ax in panels[1]:
+        ax.set_ylim(-180, 180)
+        ax.yaxis.set_major_locator(MultipleLocator(100))
+    # Fixed margins keep both rows equally tall across one/two-column figures.
+    fig.subplots_adjust(left=0.155 if panels.shape[1] == 1 else 0.08,
+                        right=0.97, bottom=0.13, top=0.965,
+                        hspace=0.10, wspace=0.32)
+
+
 def shade_aperture_slice_center(ax, fixed_coordinate, radius=3.0):
     """Shade the intersection of a cut with the central radius-3 m disk."""
     if abs(fixed_coordinate) < radius:
@@ -488,7 +503,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             for position in (-transition, transition):
                 ax.axvline(position, color="black", linestyle=":", linewidth=1)
         ax.set_xlim(-radius - 2, radius + 2)
-        ax.set_ylim(db_min, 1)
+        ax.set_ylim(db_min, 2)
         ax.set_ylabel("Normalized amplitude [dB]")
         ax.grid(True, alpha=0.25)
 
@@ -502,7 +517,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             linear = amplitude[index, :] if axis_name == "X" else amplitude[:, index]
             values, reference = normalize_slice(linear)
             phase = phase_degrees[index, :] if axis_name == "X" else phase_degrees[:, index]
-            fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+            fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
             draw(axes[0], coord, values, fixed)
             axes[1].plot(coord, phase, "o-", color="black", markersize=3, linewidth=1.2)
             shade_aperture_slice_center(axes[1], fixed)
@@ -510,7 +525,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             axes[1].set(ylabel="Phase [deg]", ylim=(-180, 180),
                         xlabel=f"{axis_name.lower()} [m]")
             axes[1].grid(True, alpha=0.25)
-            fig.tight_layout()
+            format_field_slice_figure(fig, axes, db_min)
             filename = f"slice_{fixed_name}{index:02d}_{fixed:+.2f}m.png".replace("+", "p").replace("-", "m")
             save_figure(fig, os.path.join(directory, filename), dpi=150)
             plt.close(fig)
@@ -527,7 +542,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
     for name, target in (("center", 0.0), ("offset", radius / 2)):
         iy = int(np.argmin(np.abs(y_axis - target)))
         ix = int(np.argmin(np.abs(x_axis - target)))
-        fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex="col", sharey="row")
+        fig, axes = plt.subplots(2, 2, figsize=(16, 7), sharex="col", sharey="row")
         x_values, _ = normalize_slice(amplitude[iy, :])
         y_values, _ = normalize_slice(amplitude[:, ix])
         draw(axes[0, 0], x_axis, x_values, y_axis[iy])
@@ -540,7 +555,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             shade_aperture_slice_center(ax, fixed)
             ax.set(xlabel=label, ylabel="Phase [deg]", ylim=(-180, 180))
             ax.grid(True, alpha=0.25)
-        fig.tight_layout()
+        format_field_slice_figure(fig, axes, db_min)
         path = os.path.join(root, f"aperture_amplitude_db_{name}.png")
         save_figure(fig, path, dpi=150)
         plt.close(fig)
@@ -1074,7 +1089,7 @@ if GENERATE_SLICES:
         axes[1].set_ylim(-180, 180)
         for ax in axes:
             ax.grid(True, linestyle='--', alpha=0.5)
-        fig.tight_layout()
+        format_field_slice_figure(fig, axes, DB_MIN)
         save_figure(fig, os.path.join(SLICE_DIR, f"{el_label}.png"), dpi=150)
         plt.close(fig)
 
@@ -1581,7 +1596,7 @@ if GENERATE_APERTURE_SLICES:
         *[(iy, x, phase_deg_masked[iy, :], y[iy], AP_SLICE_X_DIR, 'Y') for iy in range(ny) if np.any(mask[iy, :])],
         *[(ix, y, phase_deg_masked[:, ix], x[ix], AP_SLICE_Y_DIR, 'X') for ix in range(nx) if np.any(mask[:, ix])],
     ):
-        fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
         linear = aperture_amp[index, :] if prefix == 'Y' else aperture_amp[:, index]
         finite = linear[np.isfinite(linear)]
         reference = np.max(finite) if finite.size else np.nan
@@ -1590,7 +1605,7 @@ if GENERATE_APERTURE_SLICES:
         axes[0].plot(coord, np.where(np.isfinite(amplitude_db_slice), amplitude_db_slice, np.nan),
                      'o-', color='black', markersize=3, linewidth=1.2)
         axes[0].set_ylabel("Normalized amplitude [dB]")
-        axes[0].set_ylim(DB_MIN, 1)
+        axes[0].set_ylim(DB_MIN, 2)
         axes[1].plot(coord, values, 'o-', color='black', markersize=3, linewidth=1.2)
         axes[1].axhline(0, color='black', linewidth=0.8, linestyle='--')
         axes[1].set_xlabel(f"{'x' if prefix == 'Y' else 'y'} [m]")
@@ -1601,7 +1616,7 @@ if GENERATE_APERTURE_SLICES:
             ax.set_xlim(-D/2 - 1, D/2 + 1)
             ax.grid(True, linestyle='--', alpha=0.5)
         filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
-        fig.tight_layout()
+        format_field_slice_figure(fig, axes, DB_MIN)
         save_figure(fig, os.path.join(output_dir, filename), dpi=150)
         plt.close(fig)
 
