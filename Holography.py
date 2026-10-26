@@ -206,7 +206,7 @@ parser.add_argument(
 parser.add_argument(
     "--slice-aperture",
     action="store_true",
-    help="開口面位相と振幅(dB)の全スライスを出力する。振幅は開口面全体の最大値を0 dBとする。",
+    help="開口面の全スライスを上段:振幅(dB)・下段:位相で出力する。振幅は各断面の最大値を0 dBとする。",
 )
 parser.add_argument(
     "--slice-aperture-amp", action="store_true",
@@ -448,9 +448,16 @@ def format_aperture_axes(ax):
     ax.yaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
 
 
+def shade_aperture_slice_center(ax, fixed_coordinate, radius=3.0):
+    """Shade the intersection of a cut with the central radius-3 m disk."""
+    if abs(fixed_coordinate) < radius:
+        half_width = np.sqrt(radius**2 - fixed_coordinate**2)
+        ax.axvspan(-half_width, half_width, color="0.85", zorder=0)
+
+
 def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
-                                   output_dir, db_min):
-    """Plot native-grid amplitude cuts, each normalized to its own peak."""
+                                   output_dir, db_min, phase_degrees):
+    """Plot amplitude above corrected phase on the native grid."""
     amplitude = np.abs(field)
     def normalize_slice(linear):
         finite = linear[np.isfinite(linear)]
@@ -470,8 +477,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         # NaN gaps stay gaps. Display limits never clip the saved numerical data.
         ax.plot(coord, np.where(np.isfinite(values), values, np.nan),
                 "o-", color="black", markersize=3, linewidth=1.2)
-        if abs(fixed) <= center_size / 2:
-            ax.axvspan(-center_size / 2, center_size / 2, color="0.85", zorder=0)
+        shade_aperture_slice_center(ax, fixed)
         rim = np.sqrt(max(0.0, radius**2 - fixed**2))
         for position in (-rim, rim):
             ax.axvline(position, color="black", linestyle="--", linewidth=1)
@@ -495,9 +501,15 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
             fixed = fixed_axis[index]
             linear = amplitude[index, :] if axis_name == "X" else amplitude[:, index]
             values, reference = normalize_slice(linear)
-            fig, ax = plt.subplots(figsize=(8, 5))
-            draw(ax, coord, values, fixed)
-            ax.set_xlabel(f"{axis_name.lower()} [m]")
+            phase = phase_degrees[index, :] if axis_name == "X" else phase_degrees[:, index]
+            fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+            draw(axes[0], coord, values, fixed)
+            axes[1].plot(coord, phase, "o-", color="black", markersize=3, linewidth=1.2)
+            shade_aperture_slice_center(axes[1], fixed)
+            axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8)
+            axes[1].set(ylabel="Phase [deg]", ylim=(-180, 180),
+                        xlabel=f"{axis_name.lower()} [m]")
+            axes[1].grid(True, alpha=0.25)
             fig.tight_layout()
             filename = f"slice_{fixed_name}{index:02d}_{fixed:+.2f}m.png".replace("+", "p").replace("-", "m")
             save_figure(fig, os.path.join(directory, filename), dpi=150)
@@ -515,13 +527,19 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
     for name, target in (("center", 0.0), ("offset", radius / 2)):
         iy = int(np.argmin(np.abs(y_axis - target)))
         ix = int(np.argmin(np.abs(x_axis - target)))
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+        fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex="col", sharey="row")
         x_values, _ = normalize_slice(amplitude[iy, :])
         y_values, _ = normalize_slice(amplitude[:, ix])
-        draw(axes[0], x_axis, x_values, y_axis[iy])
-        draw(axes[1], y_axis, y_values, x_axis[ix])
-        axes[0].set_xlabel("x [m]")
-        axes[1].set_xlabel("y [m]")
+        draw(axes[0, 0], x_axis, x_values, y_axis[iy])
+        draw(axes[0, 1], y_axis, y_values, x_axis[ix])
+        for ax, coord, phase, fixed, label in (
+            (axes[1, 0], x_axis, phase_degrees[iy, :], y_axis[iy], "x [m]"),
+            (axes[1, 1], y_axis, phase_degrees[:, ix], x_axis[ix], "y [m]"),
+        ):
+            ax.plot(coord, phase, "o-", color="black", markersize=3, linewidth=1.2)
+            shade_aperture_slice_center(ax, fixed)
+            ax.set(xlabel=label, ylabel="Phase [deg]", ylim=(-180, 180))
+            ax.grid(True, alpha=0.25)
         fig.tight_layout()
         path = os.path.join(root, f"aperture_amplitude_db_{name}.png")
         save_figure(fig, path, dpi=150)
@@ -1376,9 +1394,6 @@ plot_db_phase_pair(
     aperture_db, np.rad2deg(np.angle(aperture)), extent_aperture,
     os.path.join(OUT_DIR, "aperture_field_db_phase_no_circle.png"), aperture_map=True)
 
-if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
-    save_aperture_amplitude_slices(x, y, aperture, D, CENTER_BLOCK_SIZE_M, OUT_DIR, DB_MIN)
-
 # 欠損セルを 0 とした IFFT。既存の nearest 補間結果とは別ファイルに保存し、
 # 後段の位相傾斜除去・鏡面 RMS の計算には使わない。
 raw_amp = np.abs(aperture_raw)
@@ -1519,19 +1534,19 @@ phase_x_slice = phase_deg_masked_tilt[iy_center, :]
 phase_y_slice = phase_deg_masked_tilt[:, ix_center]
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 for ax, coord, values, axis_name, color in (
-    (axes[0], x, phase_x_slice, 'X', 'C0'),
-    (axes[1], y, phase_y_slice, 'Y', 'C1'),
+    (axes[0], x, phase_x_slice, 'X', 'black'),
+    (axes[1], y, phase_y_slice, 'Y', 'black'),
 ):
     ax.plot(coord, values, marker='o', color=color, markersize=4,
             label=f'Phase along {axis_name}')
-    ax.axvspan(-CENTER_BLOCK_SIZE_M/2, CENTER_BLOCK_SIZE_M/2,
-               color='red', alpha=0.1, label='Sub-reflector')
+    ax.axvspan(-3.0, 3.0,
+               color='0.85', label='Central region (r < 3 m)')
     ax.axhline(0, color='black', linestyle='--')
     valid = ~np.isnan(values) & ~((coord >= -CENTER_BLOCK_SIZE_M/2) &
                                   (coord <= CENTER_BLOCK_SIZE_M/2))
     if np.sum(valid) > 2:
         fit = np.polyfit(coord[valid], values[valid], 1)
-        ax.plot(coord, np.polyval(fit, coord), color='red', linewidth=2,
+        ax.plot(coord, np.polyval(fit, coord), color='black', linestyle=':', linewidth=2,
                 label=f'Linear Fit (Slope: {fit[0]:.2f} deg/m)')
     ax.set_title(f"Central Slice along {axis_name}-axis (Tilt Check)")
     ax.set_xlabel(f"{axis_name.lower()} [m]")
@@ -1549,6 +1564,10 @@ phase_deg_2d = np.rad2deg(phase_after)
 # 外側も表示するため np.where によるマスクを外す
 phase_deg_masked = phase_deg_2d
 
+if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
+    save_aperture_amplitude_slices(
+        x, y, aperture, D, CENTER_BLOCK_SIZE_M, OUT_DIR, DB_MIN, phase_deg_2d)
+
 # ==========================================
 # 開口面電場分布（位相）の全スライスプロット出力
 # ==========================================
@@ -1562,16 +1581,25 @@ if GENERATE_APERTURE_SLICES:
         *[(iy, x, phase_deg_masked[iy, :], y[iy], AP_SLICE_X_DIR, 'Y') for iy in range(ny) if np.any(mask[iy, :])],
         *[(ix, y, phase_deg_masked[:, ix], x[ix], AP_SLICE_Y_DIR, 'X') for ix in range(nx) if np.any(mask[:, ix])],
     ):
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(coord, values, marker='o', markersize=3, linewidth=1.2)
-        ax.axvspan(-CENTER_BLOCK_SIZE_M/2, CENTER_BLOCK_SIZE_M/2, color='red', alpha=0.1)
-        ax.axhline(0, color='black', linewidth=0.8, linestyle='--')
-        ax.set_title(f"Aperture Phase (Fixed {prefix} = {fixed_coord:+.2f} m)")
-        ax.set_xlabel(f"{'x' if prefix == 'Y' else 'y'} [m]")
-        ax.set_ylabel("Phase [deg]")
-        ax.set_xlim(-D/2 - 1, D/2 + 1)
-        ax.set_ylim(-180, 180)
-        ax.grid(True, linestyle='--', alpha=0.5)
+        fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+        linear = aperture_amp[index, :] if prefix == 'Y' else aperture_amp[:, index]
+        finite = linear[np.isfinite(linear)]
+        reference = np.max(finite) if finite.size else np.nan
+        with np.errstate(divide='ignore', invalid='ignore'):
+            amplitude_db_slice = 20 * np.log10(linear / reference)
+        axes[0].plot(coord, np.where(np.isfinite(amplitude_db_slice), amplitude_db_slice, np.nan),
+                     'o-', color='black', markersize=3, linewidth=1.2)
+        axes[0].set_ylabel("Normalized amplitude [dB]")
+        axes[0].set_ylim(DB_MIN, 1)
+        axes[1].plot(coord, values, 'o-', color='black', markersize=3, linewidth=1.2)
+        axes[1].axhline(0, color='black', linewidth=0.8, linestyle='--')
+        axes[1].set_xlabel(f"{'x' if prefix == 'Y' else 'y'} [m]")
+        axes[1].set_ylabel("Phase [deg]")
+        axes[1].set_ylim(-180, 180)
+        for ax in axes:
+            shade_aperture_slice_center(ax, fixed_coord)
+            ax.set_xlim(-D/2 - 1, D/2 + 1)
+            ax.grid(True, linestyle='--', alpha=0.5)
         filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
         fig.tight_layout()
         save_figure(fig, os.path.join(output_dir, filename), dpi=150)
@@ -1580,12 +1608,12 @@ if GENERATE_APERTURE_SLICES:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for iy in range(ny):
         if np.any(mask[iy, :]):
-            axes[0].plot(x, phase_deg_masked[iy, :], alpha=0.25, color='C0')
+            axes[0].plot(x, phase_deg_masked[iy, :], alpha=0.25, color='black')
     for ix in range(nx):
         if np.any(mask[:, ix]):
-            axes[1].plot(y, phase_deg_masked[:, ix], alpha=0.25, color='C1')
+            axes[1].plot(y, phase_deg_masked[:, ix], alpha=0.25, color='black')
     for ax, axis_name in zip(axes, ('X', 'Y')):
-        ax.axvspan(-CENTER_BLOCK_SIZE_M/2, CENTER_BLOCK_SIZE_M/2, color='red', alpha=0.1)
+        shade_aperture_slice_center(ax, 0.0)
         ax.set_title(f"All {axis_name}-Slices Overlaid")
         ax.set_xlabel(f"{axis_name.lower()} [m]")
         ax.set_ylabel("Phase [deg]")
@@ -2172,6 +2200,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
