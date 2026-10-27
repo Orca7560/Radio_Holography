@@ -157,6 +157,7 @@ parser = argparse.ArgumentParser(
         "  python Holography.py --input I26184Y/beam.txt --output I26184Y/output\n"
         "  python Holography.py --in I26184Y/beam.txt --out I26184Y/output "
         "--slice-beam --slice-aperture\n"
+        "  python Holography.py --in beam.txt --out output --slice-aperture --slice-range 20\n"
         "  python Holography.py --input beam.txt --output output --db-min -35 "
         "--zoom-size 30 --center-block-size 2.9\n"
         "  python Holography.py --input beam.txt --output output --scan-width 57\n"
@@ -207,6 +208,11 @@ parser.add_argument(
     "--slice-aperture",
     action="store_true",
     help="開口面の全スライスを上段:振幅(dB)・下段:位相で出力する。振幅は各断面の最大値を0 dBとする。",
+)
+parser.add_argument(
+    "--slice-range", type=float, default=None, metavar="M",
+    help="開口面スライスの横軸表示範囲を±M [m]にする。例: --slice-aperture --slice-range 20。\n"
+         "--slice-aperture指定時のみ有効。未指定時は各図の従来の表示範囲を維持する。",
 )
 parser.add_argument(
     "--slice-aperture-amp", action="store_true",
@@ -278,6 +284,9 @@ if args.on_amp_min is not None and (not np.isfinite(args.on_amp_min) or args.on_
     parser.error("--on-amp-min は有限の0以上の値にしてください。")
 if not np.isfinite(args.on_length) or args.on_length <= 0:
     parser.error("--on-length は有限の正の値にしてください。")
+if args.slice_aperture and args.slice_range is not None:
+    if not np.isfinite(args.slice_range) or args.slice_range <= 0:
+        parser.error("--slice-range は有限の正の値にしてください。")
 if args.db_min >= 0:
     parser.error("--db-min は 0 未満にしてください。")
 if args.zoom_size <= 0:
@@ -291,6 +300,7 @@ AUTO_SPACE_ALIGN = args.center_on_peak
 GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
 GENERATE_APERTURE_SLICES = args.slice_aperture
+APERTURE_SLICE_RANGE_M = args.slice_range if args.slice_aperture else None
 PLOT_BEAM_CUT = args.beam
 ON_PHASE_LINEAR_FIT = args.on_phase_linear_fit
 DB_MIN = args.db_min
@@ -369,6 +379,8 @@ if GENERATE_SLICES:
     print("Beam slices: enabled (--slice-beam)")
 if GENERATE_APERTURE_SLICES:
     print("Aperture slices: enabled (--slice-aperture)")
+    if APERTURE_SLICE_RANGE_M is not None:
+        print(f"Aperture slice range: ±{APERTURE_SLICE_RANGE_M:g} m (--slice-range)")
 if OFFSET_LIMIT_ARCMIN is not None:
     print(f"Scan width: Az/El ±{OFFSET_LIMIT_ARCMIN:g} arcmin (--scan-width)")
 
@@ -483,7 +495,7 @@ def shade_aperture_slice_center(ax, fixed_coordinate, center_size=3.0):
 
 
 def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
-                                   output_dir, db_min, phase_degrees):
+                                   output_dir, db_min, phase_degrees, slice_range=None):
     """Plot amplitude above corrected phase on the native grid."""
     amplitude = np.abs(field)
     def normalize_slice(linear):
@@ -506,7 +518,8 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
                 "o-", color="black", markersize=3, linewidth=1.2)
         shade_aperture_slice_center(ax, fixed)
         draw_aperture_radius_lines(ax, diameter, fixed)
-        ax.set_xlim(-radius - 2, radius + 2)
+        limit = radius + 2 if slice_range is None else slice_range
+        ax.set_xlim(-limit, limit)
         ax.set_ylim(db_min, 2)
         ax.set_ylabel("Normalized amplitude [dB]")
         ax.grid(True, alpha=0.25)
@@ -1587,7 +1600,8 @@ phase_deg_masked = phase_deg_2d
 
 if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
     save_aperture_amplitude_slices(
-        x, y, aperture, D, CENTER_BLOCK_SIZE_M, OUT_DIR, DB_MIN, phase_deg_2d)
+        x, y, aperture, D, CENTER_BLOCK_SIZE_M, OUT_DIR, DB_MIN, phase_deg_2d,
+        slice_range=APERTURE_SLICE_RANGE_M)
 
 # ==========================================
 # 開口面電場分布（位相）の全スライスプロット出力
@@ -1620,7 +1634,8 @@ if GENERATE_APERTURE_SLICES:
         for ax in axes:
             shade_aperture_slice_center(ax, fixed_coord)
             draw_aperture_radius_lines(ax, D, fixed_coord)
-            ax.set_xlim(-D/2 - 1, D/2 + 1)
+            limit = D/2 + 1 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
+            ax.set_xlim(-limit, limit)
             ax.grid(True, linestyle='--', alpha=0.5)
         filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
         format_field_slice_figure(fig, axes, DB_MIN)
@@ -1639,7 +1654,8 @@ if GENERATE_APERTURE_SLICES:
         ax.set_title(f"All {axis_name}-Slices Overlaid")
         ax.set_xlabel(f"{axis_name.lower()} [m]")
         ax.set_ylabel("Phase [deg]")
-        ax.set_xlim(-D/2, D/2)
+        limit = D/2 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
+        ax.set_xlim(-limit, limit)
         ax.set_ylim(-180, 180)
         ax.grid(True, linestyle='--', alpha=0.5)
     fig.tight_layout()
