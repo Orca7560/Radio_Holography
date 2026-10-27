@@ -522,7 +522,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         limit = 25.0 if slice_range is None else slice_range
         ax.set_xlim(-limit, limit)
         ax.set_ylim(db_min, 2)
-        ax.set_ylabel("Normalized amplitude [dB]")
+        ax.set_ylabel("Amplitude [dB]")
         ax.grid(True, alpha=0.25)
 
     for axis_name, coord, fixed_axis in (("X", x_axis, y_axis), ("Y", y_axis, x_axis)):
@@ -1017,7 +1017,7 @@ if PLOT_BEAM_CUT:
             ax.set_xlim(-60.0, 60.0)
             ax.set_ylim(DB_MIN, 0.0)
             ax.set_xlabel(f"{main_label} offset [arcmin]")
-            ax.set_ylabel("Normalized amplitude [dB]")
+            ax.set_ylabel("Amplitude [dB]")
             ax.set_title(f"Beam Cut at {cross_label} = 0")
             ax.grid(True, linestyle="--", alpha=0.5)
             fig.tight_layout()
@@ -1069,8 +1069,8 @@ if GENERATE_SLICES:
                 axes[0].plot(x_fit, q_y_db, 'k-', label="4th order fit")
             axes[0].set_xlim(Az_fit.min() - 5.0, Az_fit.max() + 5.0)
         axes[0].axhline(-3.0, color='black', linestyle=':', alpha=0.7, label="-3 dB Line")
-        axes[0].set_ylim(GAUSS_FIT_CUTOFF_DB - 5, 2.0)
-        axes[0].set_ylabel("Normalized Amplitude [dB]")
+        axes[0].set_ylim(DB_MIN, 2.0)
+        axes[0].set_ylabel("Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
         axes[0].legend(fontsize=14)
         axes[0].grid(True, linestyle='--', alpha=0.5)
@@ -1079,7 +1079,7 @@ if GENERATE_SLICES:
         axes[1].set_ylabel("Phase [deg]")
         axes[1].set_ylim(-180, 180)
         axes[1].grid(True, linestyle='--', alpha=0.5)
-        fig.tight_layout()
+        format_field_slice_figure(fig, axes, DB_MIN)
         save_figure(fig, os.path.join(OUT_DIR, f"{cross_name.lower()}0_{main_name.lower()}_scan_dB_phase.png"), dpi=150)
         plt.close(fig)
 
@@ -1100,7 +1100,7 @@ if GENERATE_SLICES:
         fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
         axes[0].plot(Az_sorted, slice_amplitude_db[mask_el][sort_idx],
                      marker='o', markersize=3, linewidth=1.0, color='black')
-        axes[0].set_ylabel("Normalized Amplitude [dB]")
+        axes[0].set_ylabel("Amplitude [dB]")
         axes[0].set_ylim(DB_MIN, 2.0)
         axes[1].plot(Az_sorted, np.rad2deg(np.angle(E_sorted)),
                      marker='o', markersize=3, linewidth=1.0, color='black')
@@ -1625,7 +1625,7 @@ if GENERATE_APERTURE_SLICES:
             amplitude_db_slice = 20 * np.log10(linear / reference)
         axes[0].plot(coord, np.where(np.isfinite(amplitude_db_slice), amplitude_db_slice, np.nan),
                      'o-', color='black', markersize=3, linewidth=1.2)
-        axes[0].set_ylabel("Normalized amplitude [dB]")
+        axes[0].set_ylabel("Amplitude [dB]")
         axes[0].set_ylim(DB_MIN, 2)
         axes[1].plot(coord, values, 'o-', color='black', markersize=3, linewidth=1.2)
         axes[1].axhline(0, color='black', linewidth=0.8, linestyle='--')
