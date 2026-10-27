@@ -471,7 +471,7 @@ def format_field_slice_figure(fig, axes, db_min):
         ax.yaxis.set_major_locator(MultipleLocator(100))
     # Fixed margins keep both rows equally tall across one/two-column figures.
     fig.subplots_adjust(left=0.155 if panels.shape[1] == 1 else 0.08,
-                        right=0.97, bottom=0.13, top=0.965,
+                        right=0.97, bottom=0.13, top=0.92,
                         hspace=0.10, wspace=0.32)
 
 
