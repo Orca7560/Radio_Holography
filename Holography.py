@@ -475,10 +475,10 @@ def draw_aperture_radius_lines(ax, diameter, fixed_coordinate=0.0):
             ax.axvline(position, color="black", linestyle=":", linewidth=1)
 
 
-def shade_aperture_slice_center(ax, fixed_coordinate, radius=3.0):
-    """Shade the intersection of a cut with the central radius-3 m disk."""
-    if abs(fixed_coordinate) < radius:
-        half_width = np.sqrt(radius**2 - fixed_coordinate**2)
+def shade_aperture_slice_center(ax, fixed_coordinate, center_size=3.0):
+    """Shade the central 3 m-wide square (each coordinate within +/-1.5 m)."""
+    half_width = center_size / 2
+    if abs(fixed_coordinate) <= half_width:
         ax.axvspan(-half_width, half_width, color="0.85", zorder=0)
 
 
@@ -1560,8 +1560,8 @@ for ax, coord, values, axis_name, color in (
 ):
     ax.plot(coord, values, marker='o', color=color, markersize=4,
             label=f'Phase along {axis_name}')
-    ax.axvspan(-3.0, 3.0,
-               color='0.85', label='Central region (r < 3 m)')
+    ax.axvspan(-1.5, 1.5,
+               color='0.85', label='Central region (width 3 m)')
     ax.axhline(0, color='black', linestyle='--')
     valid = ~np.isnan(values) & ~((coord >= -CENTER_BLOCK_SIZE_M/2) &
                                   (coord <= CENTER_BLOCK_SIZE_M/2))
