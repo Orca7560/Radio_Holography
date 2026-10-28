@@ -695,7 +695,7 @@ def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
                           side / width, side / height])
             for left in (1.0, 7.0)]
     for ax, values, cmap, lower, upper, label in (
-        (axes[0], amplitude_db, "inferno", DB_MIN, 0, "Normalized Amplitude [dB]"),
+        (axes[0], amplitude_db, "inferno", DB_MIN, 0, "Amplitude [dB]"),
         (axes[1], phase_deg, "twilight", -180, 180, "Phase [deg]"),
     ):
         im = ax.imshow(values, extent=extent, origin="lower", aspect="equal",
@@ -1381,7 +1381,7 @@ if ZOOM_SIZE_ARCMIN is not None:
 
 fig, ax = plt.subplots(figsize=(6, 5))
 im = ax.imshow(beam_grid_db, extent=extent_vals, cmap="inferno", vmin=DB_MIN, vmax=0, origin='lower', aspect='auto')
-fig.colorbar(im, ax=ax, label="Normalized Amplitude [dB]")
+fig.colorbar(im, ax=ax, label="Amplitude [dB]")
 ax.set_title("Beam Pattern (dB Scale)"), ax.set_xlabel("Az offset [arcmin]"), ax.set_ylabel("El offset [arcmin]")
 ax.set_xlim(extent_vals[1], extent_vals[0])
 fig.tight_layout(), save_figure(fig, os.path.join(OUT_DIR, "beam_pattern_dB.png"), dpi=150)
@@ -1415,7 +1415,7 @@ if ZOOM_SIZE_ARCMIN is not None:
         beam_grid_db, extent=extent_vals, cmap="inferno", vmin=DB_MIN, vmax=0,
         origin='lower', aspect='auto'
     )
-    fig_zoom_db.colorbar(im_zoom_db, ax=ax_zoom_db, label="Normalized Amplitude [dB]")
+    fig_zoom_db.colorbar(im_zoom_db, ax=ax_zoom_db, label="Amplitude [dB]")
     ax_zoom_db.set_xlim(zoom_half_width, -zoom_half_width)
     ax_zoom_db.set_ylim(-zoom_half_width, zoom_half_width)
     ax_zoom_db.set_title(
@@ -1462,7 +1462,7 @@ if ZOOM_SIZE_ARCMIN is not None:
     # 正方形の描画領域に追従するカラーバーを配置し、上下端を揃える。
     for ax_zoom, im_zoom, colorbar_label in zip(
         axes_zoom, (im_zoom_amp, im_zoom_amp_db, im_zoom_phase),
-        ("Amplitude", "Normalized Amplitude [dB]", "Phase [deg]"),
+        ("Amplitude", "Amplitude [dB]", "Phase [deg]"),
     ):
         divider = make_axes_locatable(ax_zoom)
         colorbar_ax = divider.append_axes("right", size="5%", pad=0.10)
