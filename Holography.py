@@ -213,7 +213,7 @@ parser.add_argument(
 parser.add_argument(
     "--slice-range", type=float, default=None, metavar="M",
     help="開口面スライスの横軸表示範囲を±M [m]にする。例: --slice-aperture --slice-range 20。\n"
-         "--slice-aperture指定時のみ有効。既定の表示範囲は±25 m。",
+         "--slice-aperture指定時のみ有効。既定の表示範囲は±20 m。",
 )
 parser.add_argument(
     "--slice-aperture-amp", action="store_true",
@@ -306,7 +306,7 @@ AUTO_SPACE_ALIGN = args.center_on_peak
 GENERATE_POLAR_MAPS = args.polar
 GENERATE_SLICES = args.slice_beam
 GENERATE_APERTURE_SLICES = args.slice_aperture
-APERTURE_SLICE_RANGE_M = (25.0 if args.slice_range is None else args.slice_range) if args.slice_aperture else None
+APERTURE_SLICE_RANGE_M = (20.0 if args.slice_range is None else args.slice_range) if args.slice_aperture else None
 PLOT_BEAM_CUT = args.beam
 ON_PHASE_LINEAR_FIT = args.on_phase_linear_fit
 DB_FACTOR = args.db_factor
@@ -511,7 +511,7 @@ def shade_aperture_slice_center(ax, fixed_coordinate, center_size=3.0):
 
 
 def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
-                                   output_dir, db_min, phase_degrees, slice_range=25.0):
+                                   output_dir, db_min, phase_degrees, slice_range=20.0):
     """Plot amplitude above corrected phase on the native grid."""
     amplitude = np.abs(field)
     def normalize_slice(linear):
@@ -534,7 +534,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
                 "o-", color="black", markersize=3, linewidth=1.2)
         shade_aperture_slice_center(ax, fixed)
         draw_aperture_radius_lines(ax, diameter, fixed)
-        limit = 25.0 if slice_range is None else slice_range
+        limit = 20.0 if slice_range is None else slice_range
         ax.set_xlim(-limit, limit)
         ax.set_ylim(db_min, 2)
         ax.set_ylabel("Amplitude [dB]")
@@ -601,14 +601,14 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
 
 
 def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
-                             diameter, output_dir, db_min, slice_range=25.0):
+                             diameter, output_dir, db_min, slice_range=20.0):
     """Place y cuts to the left and x cuts below matching aperture maps.
 
     All amplitude panels share the full-field peak as their reference.
     Phase panels show the same wrapped, tilt-corrected phase as the map.
     Cuts use the nearest native-grid row/column without interpolation.
     """
-    limit = 25.0 if slice_range is None else slice_range
+    limit = 20.0 if slice_range is None else slice_range
     ix = int(np.argmin(np.abs(x_axis)))
     iy = int(np.argmin(np.abs(y_axis)))
     amplitude = np.abs(field)
@@ -1739,7 +1739,7 @@ if GENERATE_APERTURE_SLICES:
         for ax in axes:
             shade_aperture_slice_center(ax, fixed_coord)
             draw_aperture_radius_lines(ax, D, fixed_coord)
-            limit = 25.0 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
+            limit = 20.0 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
             ax.set_xlim(-limit, limit)
             ax.grid(True, linestyle='--', alpha=0.5)
         filename = f"slice_{prefix}{index:02d}_{fixed_coord:+.2f}m.png".replace("+", "p").replace("-", "m")
@@ -1759,7 +1759,7 @@ if GENERATE_APERTURE_SLICES:
         ax.set_title(f"All {axis_name}-Slices Overlaid")
         ax.set_xlabel(f"{axis_name.lower()} [m]")
         ax.set_ylabel("Phase [deg]")
-        limit = 25.0 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
+        limit = 20.0 if APERTURE_SLICE_RANGE_M is None else APERTURE_SLICE_RANGE_M
         ax.set_xlim(-limit, limit)
         ax.set_ylim(-180, 180)
         ax.grid(True, linestyle='--', alpha=0.5)
