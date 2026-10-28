@@ -207,7 +207,8 @@ parser.add_argument(
 parser.add_argument(
     "--slice-aperture",
     action="store_true",
-    help="開口面の全スライスを上段:振幅(dB)・下段:位相で出力する。振幅は各断面の最大値を0 dBとする。",
+    help="開口面の全スライスとマップ＋XY断面図を出力する。個別スライスの振幅は各断面の最大値、\n"
+         "マップ＋断面図は開口面全体の最大値を0 dBとする。",
 )
 parser.add_argument(
     "--slice-range", type=float, default=None, metavar="M",
@@ -597,6 +598,90 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
     print("[INFO] 開口面振幅断面: 各断面の最大振幅を0 dBに規格化、"
           f"格子間隔 dx={abs(x_axis[1]-x_axis[0]):.4g} m, dy={abs(y_axis[1]-y_axis[0]):.4g} m。"
           "各断面の基準振幅はslices.csvに保存。追加補間・平滑化なし。")
+
+
+def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
+                             diameter, output_dir, db_min, slice_range=25.0):
+    """Place y cuts to the left and x cuts below matching aperture maps.
+
+    All amplitude panels share the full-field peak as their reference.
+    Phase panels show the same wrapped, tilt-corrected phase as the map.
+    Cuts use the nearest native-grid row/column without interpolation.
+    """
+    limit = 25.0 if slice_range is None else slice_range
+    ix = int(np.argmin(np.abs(x_axis)))
+    iy = int(np.argmin(np.abs(y_axis)))
+    amplitude = np.abs(field)
+    reference = np.nanmax(amplitude)
+    amplitude_db = amplitude_to_db(amplitude, reference)
+    phase_wrapped = np.rad2deg(np.angle(np.exp(1j * np.deg2rad(phase_degrees))))
+    dx = abs(x_axis[1] - x_axis[0])
+    dy = abs(y_axis[1] - y_axis[0])
+    extent = [x_axis.min() - dx/2, x_axis.max() + dx/2,
+              y_axis.min() - dy/2, y_axis.max() + dy/2]
+    # Physical dimensions keep the map square and coordinate axes aligned.
+    width, height, side = 19.6, 8.0, 4.4
+    fig = plt.figure(figsize=(width, height))
+    def add_axes(left, bottom, panel_width, panel_height):
+        return fig.add_axes([left/width, bottom/height,
+                             panel_width/width, panel_height/height])
+    for offset, values, cmap, lower, upper, label, title in (
+        (0.0, amplitude_db, "inferno", db_min, 0, "Amplitude [dB]", "Amplitude"),
+        (9.8, phase_wrapped, "twilight", -180, 180, "Phase [deg]", "Phase (tilt removed)"),
+    ):
+        left, bottom = offset + 3.1, 2.8
+        ax_map = add_axes(left, bottom, side, side)
+        ax_y = add_axes(offset + 1.0, bottom, 1.2, side)
+        ax_x = add_axes(left, 0.8, side, 1.2)
+        ax_color = add_axes(left + side + 0.15, bottom, 0.18, side)
+        im = ax_map.imshow(values, extent=extent, origin="lower",
+                           cmap=cmap, vmin=lower, vmax=upper,
+                           interpolation="nearest", aspect="equal")
+        fig.colorbar(im, cax=ax_color, label=label)
+        ax_map.add_patch(plt.Circle((0, 0), diameter/2, fill=False,
+                                   color="black", linestyle="--", linewidth=1.2))
+        ax_map.axvline(x_axis[ix], color="black", linestyle=":", linewidth=0.8)
+        ax_map.axhline(y_axis[iy], color="black", linestyle=":", linewidth=0.8)
+        ax_map.set(xlim=(-limit, limit), ylim=(-limit, limit),
+                   xlabel="x [m]", ylabel="y [m]", title=title)
+        ax_y.plot(values[:, ix], y_axis, "o-", color="black",
+                  markersize=3, linewidth=1.0)
+        ax_x.plot(x_axis, values[iy, :], "o-", color="black",
+                  markersize=3, linewidth=1.0)
+        ax_y.set(ylim=(-limit, limit), xlim=(lower, upper),
+                 xlabel=label, ylabel="y [m]")
+        ax_x.set(xlim=(-limit, limit), ylim=(lower, upper),
+                 xlabel="x [m]", ylabel=label)
+        # Apply the same reference lines as the standalone cuts, transposed
+        # for the y profile so all its labels remain upright.
+        draw_aperture_radius_lines(ax_x, diameter, y_axis[iy])
+        shade_aperture_slice_center(ax_x, y_axis[iy])
+        for position in (-diameter/2, diameter/2):
+            ax_y.axhline(position, color="black", linestyle="--", linewidth=1)
+        if diameter == 32 and abs(x_axis[ix]) < 0.9 * diameter/2:
+            edge = np.sqrt((0.9 * diameter/2)**2 - x_axis[ix]**2)
+            for position in (-edge, edge):
+                ax_y.axhline(position, color="black", linestyle=":", linewidth=1)
+        if abs(x_axis[ix]) <= 1.5:
+            ax_y.axhspan(-1.5, 1.5, color="0.85", zorder=0)
+        value_step = 10 if cmap == "inferno" else 100
+        ax_y.xaxis.set_major_locator(MultipleLocator(20 if cmap == "inferno" else value_step))
+        ax_y.xaxis.label.set_fontsize(14)
+        ax_x.yaxis.label.set_fontsize(14)
+        ax_x.yaxis.set_major_locator(MultipleLocator(value_step))
+        ax_y.tick_params(axis="x", labelsize=12)
+        ax_x.tick_params(axis="y", labelsize=12)
+        for ax in (ax_map, ax_x):
+            ax.xaxis.set_major_locator(MultipleLocator(10))
+        for ax in (ax_map, ax_y):
+            ax.yaxis.set_major_locator(MultipleLocator(10))
+        for ax in (ax_y, ax_x):
+            ax.grid(True, alpha=0.25)
+    path = save_figure(fig, os.path.join(output_dir, "aperture_map_slices.png"), dpi=150)
+    plt.close(fig)
+    print(f"[INFO] 開口面マップ＋断面: {path}; "
+          f"x={x_axis[ix]:+.4f} m, y={y_axis[iy]:+.4f} m; "
+          f"振幅はマップ全体の最大値を基準、{DB_FACTOR} log10表示。")
 
 
 def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
@@ -1624,6 +1709,9 @@ if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
 # 開口面電場分布（位相）の全スライスプロット出力
 # ==========================================
 if GENERATE_APERTURE_SLICES:
+    save_aperture_map_slices(
+        x, y, aperture, phase_deg_2d, D, OUT_DIR, DB_MIN,
+        slice_range=APERTURE_SLICE_RANGE_M)
     AP_SLICE_X_DIR = os.path.join(OUT_DIR, "aperture_slice", "along_X_fixed_Y")
     AP_SLICE_Y_DIR = os.path.join(OUT_DIR, "aperture_slice", "along_Y_fixed_X")
     os.makedirs(AP_SLICE_X_DIR, exist_ok=True)
