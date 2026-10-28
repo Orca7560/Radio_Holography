@@ -220,6 +220,11 @@ parser.add_argument(
          "各断面の規格化・平滑化は行わない。--slice-apertureにも含まれる。",
 )
 parser.add_argument(
+    "--db-factor", type=int, choices=(10, 20), default=20,
+    help="振幅比のdB表示係数。20: 20 log10(A/Aref)（既定）、10: 10 log10(A/Aref)。\n"
+         "10も電場振幅比に適用する表示であり、電力比への変換ではない。解析条件は変更しない。",
+)
+parser.add_argument(
     "--db-min", type=float, default=DB_MIN, metavar="DB",
     help=f"dB スケールの下限 [dB]（既定値: {DB_MIN:g}）。",
 )
@@ -303,6 +308,7 @@ GENERATE_APERTURE_SLICES = args.slice_aperture
 APERTURE_SLICE_RANGE_M = (25.0 if args.slice_range is None else args.slice_range) if args.slice_aperture else None
 PLOT_BEAM_CUT = args.beam
 ON_PHASE_LINEAR_FIT = args.on_phase_linear_fit
+DB_FACTOR = args.db_factor
 DB_MIN = args.db_min
 ZOOM_SIZE_ARCMIN = args.zoom_size
 CENTER_BLOCK_SIZE_M = args.center_block_size
@@ -373,6 +379,7 @@ if GENERATE_SLICES:
 
 print(f"Input : {BEAM_FILE}")
 print(f"Output: {OUT_DIR}")
+print(f"[INFO] dB display: {DB_FACTOR} log10(amplitude / reference); amplitude ratio")
 if GENERATE_POLAR_MAPS:
     print("Polar display: enabled (--polar)")
 if GENERATE_SLICES:
@@ -460,6 +467,13 @@ def format_aperture_axes(ax):
     ax.yaxis.set_major_locator(MultipleLocator(APERTURE_TICK_STEP_M))
 
 
+def amplitude_to_db(amplitude, reference, factor=None):
+    """Convert an amplitude ratio for display; this does not square the field."""
+    coefficient = DB_FACTOR if factor is None else factor
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return coefficient * np.log10(np.asarray(amplitude) / reference)
+
+
 def format_field_slice_figure(fig, axes, db_min):
     """Use identical vertical scales and panel heights for beam/aperture cuts."""
     panels = np.asarray(axes).reshape(2, -1)
@@ -505,7 +519,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
         if not np.isfinite(reference) or reference <= 0:
             return np.full(linear.shape, np.nan), reference
         with np.errstate(divide="ignore", invalid="ignore"):
-            return 20 * np.log10(linear / reference), reference
+            return amplitude_to_db(linear, reference), reference
 
     radius = diameter / 2
     root = os.path.join(output_dir, "aperture_amplitude_slice")
@@ -552,7 +566,7 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
                 "slice_axis": axis_name, "fixed_coordinate_m": fixed,
                 "coordinate_m": coord, "radius_m": np.hypot(coord, fixed),
                 "amplitude": linear, "amplitude_db": values,
-                "reference_amplitude": reference}))
+                "reference_amplitude": reference, "db_factor": DB_FACTOR}))
             if counter == len(selected) or counter % 10 == 0:
                 print(f"[INFO] 開口面振幅断面 {axis_name}: {counter}/{len(selected)}", flush=True)
     pd.concat(records, ignore_index=True).to_csv(os.path.join(root, "slices.csv"), index=False)
@@ -1011,7 +1025,7 @@ if PLOT_BEAM_CUT:
             print("[WARN] --beam: 最大振幅が0のため、出力しません。")
         else:
             with np.errstate(divide="ignore"):
-                amp_cut_db = 20.0 * np.log10(amp_cut / peak_cut)
+                amp_cut_db = amplitude_to_db(amp_cut, peak_cut)
             fig, ax = plt.subplots(figsize=(8, 4.5))
             ax.plot(az_cut, amp_cut_db, marker=".", markersize=3, linewidth=1.0)
             ax.set_xlim(-60.0, 60.0)
@@ -1046,9 +1060,9 @@ if GENERATE_SLICES:
 
         peak_amp = np.max(Amp_el0)
         with np.errstate(divide='ignore', invalid='ignore'):
-            Amp_el0_db = 20 * np.log10(Amp_el0 / peak_amp)
+            Amp_el0_db = amplitude_to_db(Amp_el0, peak_amp)
         fit_res = analyze_beam_width(Az_el0, Amp_el0)
-        valid_idx = Amp_el0_db >= GAUSS_FIT_CUTOFF_DB
+        valid_idx = amplitude_to_db(Amp_el0, peak_amp, factor=20) >= GAUSS_FIT_CUTOFF_DB
 
         fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
         axes[0].plot(Az_el0, Amp_el0_db, 'k.', alpha=0.3, label="All Data")
@@ -1059,16 +1073,18 @@ if GENERATE_SLICES:
             if fit_res.get('gauss'):
                 g_y = gaussian(x_fit, *fit_res['gauss']['popt'])
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    g_y_db = 20 * np.log10(g_y / peak_amp)
+                    g_y_db = amplitude_to_db(g_y, peak_amp)
                 axes[0].plot(x_fit, g_y_db, 'k--', lw=2,
                              label=f"Gauss FWHM: {fit_res['gauss']['fwhm']:.2f}'")
             if fit_res.get('poly'):
                 q_y = fit_res['poly']['poly1d'](x_fit)
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    q_y_db = 20 * np.log10(np.maximum(q_y, 1e-10) / peak_amp)
+                    q_y_db = amplitude_to_db(np.maximum(q_y, 1e-10), peak_amp)
                 axes[0].plot(x_fit, q_y_db, 'k-', label="4th order fit")
             axes[0].set_xlim(Az_fit.min() - 5.0, Az_fit.max() + 5.0)
-        axes[0].axhline(-3.0, color='black', linestyle=':', alpha=0.7, label="-3 dB Line")
+        reference_level_db = -3.0 * DB_FACTOR / 20
+        axes[0].axhline(reference_level_db, color='black', linestyle=':', alpha=0.7,
+                        label=f"Reference level: {reference_level_db:g} dB (20-log: -3 dB)")
         axes[0].set_ylim(DB_MIN, 2.0)
         axes[0].set_ylabel("Amplitude [dB]")
         axes[0].set_title(f"{cross_name}=0 Scan: {main_name} offset vs Amplitude [dB] & Phase")
@@ -1088,7 +1104,7 @@ if GENERATE_SLICES:
     if not np.isfinite(slice_peak) or slice_peak <= 0:
         slice_peak = 1.0
     with np.errstate(divide="ignore", invalid="ignore"):
-        slice_amplitude_db = np.clip(20.0 * np.log10(slice_amplitude / slice_peak), DB_MIN, 0.0)
+        slice_amplitude_db = np.clip(amplitude_to_db(slice_amplitude, slice_peak), DB_MIN, 0.0)
 
     for el_val_orig in np.unique(cross_orig):
         mask_el = (cross_orig == el_val_orig)
@@ -1263,7 +1279,7 @@ fig.tight_layout(), save_figure(fig, os.path.join(OUT_DIR, "beam_pattern.png"), 
 
 peak_amp = np.nanmax(beam_grid_amp)
 with np.errstate(divide='ignore', invalid='ignore'):
-    beam_grid_db = 20 * np.log10(beam_grid_amp / peak_amp)
+    beam_grid_db = amplitude_to_db(beam_grid_amp, peak_amp)
     beam_grid_db = np.clip(beam_grid_db, a_min=DB_MIN, a_max=0)
 
 # 論文用2枚組: 左が規格化振幅(dB)、右が複素ビームの位相。
@@ -1402,7 +1418,7 @@ axes[0].set_title("Aperture Field Amplitude"), axes[0].set_xlabel("x [m]"), axes
 
 # 振幅 (dBスケール追加)
 with np.errstate(divide='ignore', invalid='ignore'):
-    aperture_db = 20 * np.log10(aperture_amp / np.nanmax(aperture_amp))
+    aperture_db = amplitude_to_db(aperture_amp, np.nanmax(aperture_amp))
     aperture_db = np.clip(aperture_db, a_min=DB_MIN, a_max=0)
 im_db = axes[1].imshow(aperture_db, extent=extent_aperture, cmap="inferno", origin='lower', vmin=DB_MIN, vmax=0)
 fig.colorbar(im_db, ax=axes[1], label="Amplitude [dB]")
@@ -1437,7 +1453,7 @@ im = axes[0].imshow(raw_amp, extent=extent_aperture, cmap="viridis", origin="low
 fig.colorbar(im, ax=axes[0], label="Amplitude")
 axes[0].set_title("Aperture Amplitude (missing cells = 0)")
 with np.errstate(divide='ignore', invalid='ignore'):
-    raw_db = 20 * np.log10(raw_amp / np.max(raw_amp)) if np.max(raw_amp) > 0 else np.full_like(raw_amp, DB_MIN)
+    raw_db = amplitude_to_db(raw_amp, np.max(raw_amp)) if np.max(raw_amp) > 0 else np.full_like(raw_amp, DB_MIN)
     raw_db = np.clip(raw_db, a_min=DB_MIN, a_max=0)
 im = axes[1].imshow(raw_db, extent=extent_aperture, cmap="inferno", vmin=DB_MIN, vmax=0, origin="lower")
 fig.colorbar(im, ax=axes[1], label="Amplitude [dB]")
@@ -1622,7 +1638,7 @@ if GENERATE_APERTURE_SLICES:
         finite = linear[np.isfinite(linear)]
         reference = np.max(finite) if finite.size else np.nan
         with np.errstate(divide='ignore', invalid='ignore'):
-            amplitude_db_slice = 20 * np.log10(linear / reference)
+            amplitude_db_slice = amplitude_to_db(linear, reference)
         axes[0].plot(coord, np.where(np.isfinite(amplitude_db_slice), amplitude_db_slice, np.nan),
                      'o-', color='black', markersize=3, linewidth=1.2)
         axes[0].set_ylabel("Amplitude [dB]")
@@ -2148,7 +2164,7 @@ def save_polar_figures(polar_field, r_edges, theta_edges, amplitude_reference,
     os.makedirs(out_dir, exist_ok=True)
     amplitude = np.abs(polar_field)
     with np.errstate(divide='ignore', invalid='ignore'):
-        amplitude_db = np.clip(20 * np.log10(amplitude / amplitude_reference), db_min, 0)
+        amplitude_db = np.clip(amplitude_to_db(amplitude, amplitude_reference), db_min, 0)
     phase = np.rad2deg(np.angle(polar_field))
     phase = np.where(amplitude > phase_amp_min * amplitude_reference, phase, np.nan)
     panels = [
