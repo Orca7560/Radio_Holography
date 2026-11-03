@@ -1258,12 +1258,12 @@ def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
     core = measured & (np.hypot(az, el) <= 8.0)
     if not np.any(core):
         print("[WARN] Beam power check skipped: no measured cells within 8 arcmin.", file=sys.stderr)
-        return
+        return np.zeros_like(occupied, dtype=bool)
     iy, ix = np.unravel_index(np.argmax(np.where(core, amplitude, -np.inf)), beam.shape)
     reference = amplitude[iy, ix]
     if reference <= 0:
         print("[WARN] Beam power check skipped: main beam peak is zero.", file=sys.stderr)
-        return
+        return np.zeros_like(occupied, dtype=bool)
 
     radius = np.hypot(az - az[iy, ix], el - el[iy, ix]) * arcmin_to_rad
     # Allow one grid cell of radial mismatch so Airy nulls do not dominate.
@@ -1289,7 +1289,7 @@ def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
     report.to_csv(path, index=False)
     if report.empty:
         print("[INFO] Beam power check: no bright excesses.")
-        return
+        return flagged
     print(f"[ERROR] Beam power check: {len(report)} anomalous measured cells. Details: {path}",
           file=sys.stderr)
     for row in report.head(10).itertuples(index=False):
@@ -1297,9 +1297,10 @@ def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
               f"observed {row.observed_power_db:.1f} dB, "
               f"model envelope {row.model_envelope_power_db:.1f} dB "
               f"(excess {row.excess_db:+.1f} dB)", file=sys.stderr)
+    return flagged
 
 
-check_beam_power(beam_grid_raw, valid_cells, tx_arcmin, ty_arcmin, D, wavelength,
+beam_anomaly_mask = check_beam_power(beam_grid_raw, valid_cells, tx_arcmin, ty_arcmin, D, wavelength,
                  OUT_DIR, args.beam_excess_db, args.beam_min_power_db)
 
 
@@ -1857,6 +1858,41 @@ surface_rms_mask = ((R >= SURFACE_RMS_RADIUS_MIN_M) &
 if not np.any(surface_rms_mask):
     raise ValueError(f"半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} mに有効な鏡面誤差データがありません。")
 rms_annulus_tilt = np.sqrt(np.mean(surface_tilt_mm[surface_rms_mask]**2))
+if np.any(beam_anomaly_mask):
+    clean_output_dir = os.path.join(OUT_DIR, "beam_anomaly_removed")
+    os.makedirs(clean_output_dir, exist_ok=True)
+    # Remove every original sample assigned to a flagged cell, then fill
+    # the gaps from surviving samples on the same FFT grid as the original.
+    keep = ~beam_anomaly_mask.ravel()[mc_layout[0]]
+    clean_layout = grid_layout(Az[keep], El[keep], tx_arcmin, ty_arcmin)
+    clean_beam, _ = average_grid(E_corr[keep], clean_layout)
+    clean_aperture = aperture_from_beam(clean_beam)
+    clean_phase, _, _ = remove_phase_tilt(
+        correct_aperture_phase(clean_aperture), X, Y, fit_mask)
+    clean_surface_mm = wavelength * 1e3 / (4 * np.pi) * clean_phase
+    comparison = []
+    for region, rms_mask, original in (
+        ("full_aperture", surface_full_aperture_mask, rms_full_aperture_tilt),
+        ("annulus", surface_rms_mask, rms_annulus_tilt),
+    ):
+        cleaned = np.sqrt(np.mean(clean_surface_mm[rms_mask]**2))
+        comparison.append({
+            "region": region, "original_rms_mm": original,
+            "cleaned_rms_mm": cleaned, "change_mm": cleaned - original,
+            "removed_cells": int(np.count_nonzero(beam_anomaly_mask)),
+            "removed_samples": int(np.count_nonzero(~keep)),
+        })
+        print(f"[INFO] Surface RMS ({region}, anomaly removal): "
+              f"{original:.3f} -> {cleaned:.3f} mm")
+    pd.DataFrame(comparison).to_csv(
+        os.path.join(clean_output_dir, "surface_rms_beam_anomaly_comparison.csv"), index=False)
+    np.savez_compressed(
+        os.path.join(clean_output_dir, "surface_beam_anomaly_comparison.npz"),
+        x_m=x, y_m=y, original_surface_mm=surface_tilt_mm,
+        cleaned_surface_mm=clean_surface_mm,
+        full_aperture_rms_mask=surface_full_aperture_mask,
+        annulus_rms_mask=surface_rms_mask, beam_anomaly_mask=beam_anomaly_mask)
+
 threshold_rms_mask = surface_rms_mask & (np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM)
 rms_after_thresh_tilt = (
     np.sqrt(np.mean(surface_tilt_mm[threshold_rms_mask]**2))
