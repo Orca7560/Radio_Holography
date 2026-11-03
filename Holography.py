@@ -1859,6 +1859,8 @@ if not np.any(surface_rms_mask):
     raise ValueError(f"半径{SURFACE_RMS_RADIUS_MIN_M:g}–{SURFACE_RMS_RADIUS_MAX_M:g} mに有効な鏡面誤差データがありません。")
 rms_annulus_tilt = np.sqrt(np.mean(surface_tilt_mm[surface_rms_mask]**2))
 if np.any(beam_anomaly_mask):
+    clean_output_dir = os.path.join(OUT_DIR, "beam_anomaly_removed")
+    os.makedirs(clean_output_dir, exist_ok=True)
     # Remove every original sample assigned to a flagged cell, then fill
     # the gaps from surviving samples on the same FFT grid as the original.
     keep = ~beam_anomaly_mask.ravel()[mc_layout[0]]
@@ -1883,9 +1885,9 @@ if np.any(beam_anomaly_mask):
         print(f"[INFO] Surface RMS ({region}, anomaly removal): "
               f"{original:.3f} -> {cleaned:.3f} mm")
     pd.DataFrame(comparison).to_csv(
-        os.path.join(OUT_DIR, "surface_rms_beam_anomaly_comparison.csv"), index=False)
+        os.path.join(clean_output_dir, "surface_rms_beam_anomaly_comparison.csv"), index=False)
     np.savez_compressed(
-        os.path.join(OUT_DIR, "surface_beam_anomaly_comparison.npz"),
+        os.path.join(clean_output_dir, "surface_beam_anomaly_comparison.npz"),
         x_m=x, y_m=y, original_surface_mm=surface_tilt_mm,
         cleaned_surface_mm=clean_surface_mm,
         full_aperture_rms_mask=surface_full_aperture_mask,
