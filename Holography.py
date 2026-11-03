@@ -454,7 +454,7 @@ def save_figure_file(fig, path, image_format, **kwargs):
     return path
 
 
-def save_figure(fig, path, **kwargs):
+def save_figure(fig, path, *, output_root=None, **kwargs):
     """PNGとPDFを保存する。PDF内にも元の相対フォルダ構成を保つ。"""
     # 図の説明はキャプションで行うため、全パネルのタイトルを保存前に除去。
     for ax in fig.axes:
@@ -463,8 +463,9 @@ def save_figure(fig, path, **kwargs):
     if fig._suptitle is not None:
         fig._suptitle.set_text("")
     path = os.path.abspath(os.fspath(path))
-    relative_path = os.path.relpath(path, os.path.abspath(OUT_DIR))
-    pdf_path = os.path.join(OUT_DIR, "pdf", os.path.splitext(relative_path)[0] + ".pdf")
+    output_root = OUT_DIR if output_root is None else output_root
+    relative_path = os.path.relpath(path, os.path.abspath(output_root))
+    pdf_path = os.path.join(output_root, "pdf", os.path.splitext(relative_path)[0] + ".pdf")
     png_path = save_figure_file(fig, path, "png", **kwargs)
     save_figure_file(fig, pdf_path, "pdf", **kwargs)
     return png_path
@@ -694,7 +695,7 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
 
 
 def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
-                       aperture_map=False, zoom_size=None):
+                       aperture_map=False, zoom_size=None, output_root=None):
     """Save fixed-size square maps; full and zoom figures share one layout."""
     width, height, side = 12.0, 5.5, 3.6
     bottom = 0.85
@@ -736,13 +737,13 @@ def plot_db_phase_pair(amplitude_db, phase_deg, extent, path, *,
         ticks = (np.arange(np.ceil(DB_MIN / 10.0) * 10.0, 1.0, 10.0)
                  if cmap == "inferno" else np.arange(-180, 181, 60))
         fig.colorbar(im, cax=cax, label=label, ticks=ticks)
-    save_figure(fig, path, dpi=150)
+    save_figure(fig, path, dpi=150, output_root=output_root)
     if aperture_map:
         for ax in axes:
             ax.add_patch(plt.Circle((0, 0), D / 2, color="black", fill=False,
                                    linestyle="--", linewidth=1.5, alpha=0.7))
         circle_path = path.replace("_no_circle.png", ".png")
-        save_figure(fig, circle_path, dpi=150)
+        save_figure(fig, circle_path, dpi=150, output_root=output_root)
     plt.close(fig)
 
 
@@ -1892,6 +1893,35 @@ if np.any(beam_anomaly_mask):
         cleaned_surface_mm=clean_surface_mm,
         full_aperture_rms_mask=surface_full_aperture_mask,
         annulus_rms_mask=surface_rms_mask, beam_anomaly_mask=beam_anomaly_mask)
+
+    clean_beam_amp = np.abs(clean_beam)
+    clean_aperture_amp = np.abs(clean_aperture)
+    plot_db_phase_pair(
+        amplitude_to_db(clean_beam_amp, np.nanmax(clean_beam_amp)),
+        np.angle(clean_beam, deg=True), extent_vals,
+        os.path.join(clean_output_dir, "beam_pattern_db_phase.png"),
+        output_root=clean_output_dir)
+    plot_db_phase_pair(
+        amplitude_to_db(clean_aperture_amp, np.nanmax(clean_aperture_amp)),
+        np.angle(np.exp(1j * clean_phase), deg=True), extent_aperture,
+        os.path.join(clean_output_dir, "aperture_field_corrected_db_phase_no_circle.png"),
+        aperture_map=True, output_root=clean_output_dir)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(
+        np.where(surface_full_aperture_mask, clean_surface_mm, np.nan),
+        extent=[x.min() - dx/2, x.max() + dx/2, y.min() - dy/2, y.max() + dy/2],
+        origin="lower", cmap="coolwarm", vmin=-SURFACE_ERR_THRESHOLD_MM,
+        vmax=SURFACE_ERR_THRESHOLD_MM)
+    fig.colorbar(im, ax=ax, label="Surface Error [mm]")
+    ax.set(xlabel="x [m]", ylabel="y [m]", xlim=(-20, 20), ylim=(-20, 20))
+    format_aperture_axes(ax)
+    ax.add_patch(plt.Circle((0, 0), D / 2, color="black", fill=False,
+                            linestyle="--", linewidth=1.5))
+    fig.tight_layout()
+    save_figure(fig, os.path.join(clean_output_dir, "surface_error.png"),
+                dpi=150, output_root=clean_output_dir)
+    plt.close(fig)
 
 threshold_rms_mask = surface_rms_mask & (np.abs(surface_tilt_mm) <= SURFACE_ERR_THRESHOLD_MM)
 rms_after_thresh_tilt = (
