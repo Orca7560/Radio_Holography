@@ -8,8 +8,9 @@ Examples:
 
 Uses observation XML files to identify offset correlation files and their start
 times/durations, and PRD pointing knots to select the +/-12 arcmin square.
-frinZ --length/--step/--skip are sample counts (default 1000 samples/s).
-The default 10/10 therefore means 10 ms integrations every 10 ms.
+frinZ is invoked once per integration with --length and --skip only.
+--step-samples is this script's spacing, not an option passed to frinZ.
+Sample counts are converted using XML stream/output (or --samples-per-second).
 Positive lag shifts the selected direction's integration later, as in
 corr_fringe.py; output Epoch/coordinates retain the nominal integration times.
 This script does not run gico3 or apply ON phase calibration/34m phase inversion.
@@ -42,6 +43,7 @@ class Scan:
     path: Path
     start: datetime
     duration: float
+    sample_rate: float
 
 
 def read_prd(path):
@@ -77,13 +79,20 @@ def scan_direction(position, axis):
     return int(np.sign(primary)) if abs(primary) > 1e-5 and abs(cross) < 1e-8 else 0
 
 
-def read_scans(workdir, xml_paths, on_length):
+def read_scans(workdir, xml_paths, on_length, sample_rate_override=None):
     scans = {}
     for path in xml_paths:
         root = ET.parse(path).getroot()
         label = root.findtext("stream/label")
         if label is None:
             raise ValueError(f"XML lacks stream/label: {path}")
+        stream = root.find("stream")
+        rate_text = root.findtext("stream/output") or (stream.get("output") if stream is not None else None)
+        if sample_rate_override is None and rate_text is None:
+            raise ValueError(f"XML lacks stream/output: {path}; specify --samples-per-second")
+        sample_rate = float(sample_rate_override if sample_rate_override is not None else rate_text)
+        if not math.isfinite(sample_rate) or sample_rate <= 0:
+            raise ValueError(f"invalid correlation output rate in {path}")
         for process in root.findall("process"):
             start = datetime.strptime(process.findtext("epoch").strip(), "%Y/%j %H:%M:%S")
             skip = float(process.findtext("skip"))
@@ -96,7 +105,7 @@ def read_scans(workdir, xml_paths, on_length):
             start += timedelta(seconds=skip)
             stamp = start.strftime("%Y%j%H%M%S")
             for cor in sorted((workdir / "step_cor").glob(f"*_{stamp}_{label.strip()}.cor")):
-                scan = Scan(cor.resolve(), start, duration)
+                scan = Scan(cor.resolve(), start, duration, sample_rate)
                 if cor in scans and scans[cor] != scan:
                     raise ValueError(f"conflicting XML metadata for {cor}")
                 scans[cor] = scan
@@ -124,32 +133,31 @@ def selected_scan(scan, records, times, axis, half_width):
     return False
 
 
-def make_command(scan, records, times, args):
-    # Determine the direction from the actual PRD leg crossing the square.
-    directions = set()
-    for a, b in zip(records, records[1:]):
-        lo, hi = max(a[0], scan.start), min(b[0], scan.start + timedelta(seconds=scan.duration))
-        if hi > lo:
-            p = pointing(records, times, lo + (hi - lo) / 2)
-            if p is not None and scan_direction(p, args.scan_axis):
-                directions.add(scan_direction(p, args.scan_axis))
-    if len(directions) != 1:
-        raise ValueError(f"offset file must contain one scan direction: {scan.path}")
-    direction = directions.pop()
+def make_tasks(scan, records, times, args):
+    """Select nominal central windows, then shift their physical read positions."""
+    rate = scan.sample_rate
     chosen = 1 if args.forward_direction == "increasing" else -1
-    lag = args.scan_lag_ms if direction == chosen else 0.0
-    units = lag * args.samples_per_second / 1000
-    if not math.isclose(units, round(units), abs_tol=1e-8):
-        raise ValueError("scan lag must be an integer number of correlation samples")
-    lag_units = int(round(units))
-    # Negative lag: omit nominal bins that would start before the .cor data.
-    first = max(0, math.ceil(-lag_units / args.step_samples))
-    actual_skip = first * args.step_samples + lag_units
-    command = [args.frinz, "--in", str(scan.path), "--length", str(args.length_samples),
-               "--step", str(args.step_samples)]
-    if actual_skip:
-        command += ["--skip", str(actual_skip)]
-    return command, first, lag_units
+    tasks = []
+    total_samples = math.floor(scan.duration * rate + 1e-6)
+    for nominal in range(0, total_samples - args.length_samples + 1, args.step_samples):
+        epoch = scan.start + timedelta(seconds=nominal / rate)
+        p = pointing(records, times, epoch + timedelta(seconds=args.length_samples / rate / 2))
+        if p is None:
+            continue
+        direction = scan_direction(p, args.scan_axis)
+        if not direction or abs(p[0]) > args.half_width or abs(p[1]) > args.half_width:
+            continue
+        requested = args.scan_lag_ms if direction == chosen else 0.0
+        units = requested * rate / 1000
+        # Round to the nearest actual output sample, ties away from zero.
+        lag_units = int(math.copysign(math.floor(abs(units) + 0.5), units))
+        actual = nominal + lag_units
+        if actual < 0 or actual + args.length_samples > total_samples:
+            continue
+        command = [args.frinz, "--in", str(scan.path),
+                   "--length", str(args.length_samples), "--skip", str(actual)]
+        tasks.append((command, epoch, p, lag_units * 1000 / rate))
+    return tasks
 
 
 def parse_result(line):
@@ -167,54 +175,48 @@ def parse_result(line):
     return length, amp, phase, snr
 
 
-def process_scan(scan, records, times, args, outdir):
-    command, first, lag_units = make_command(scan, records, times, args)
-    print("+ " + shlex.join(command), flush=True)
+def process_scan(scan, tasks, args, outdir):
     raw_path = outdir / (scan.path.stem + ".stdout.txt")
     err_path = outdir / (scan.path.stem + ".stderr.txt")
     result = []
-    index = 0
+    print(f"[INFO] {scan.path.name}: {len(tasks)} central integrations; "
+          f"output={scan.sample_rate:g} Hz; "
+          f"length={args.length_samples / scan.sample_rate * 1000:g} ms", flush=True)
+    requested_units = args.scan_lag_ms * scan.sample_rate / 1000
+    quantized = math.copysign(math.floor(abs(requested_units) + 0.5), requested_units)
+    if not math.isclose(requested_units, quantized, abs_tol=1e-8):
+        print(f"[WARN] requested lag={args.scan_lag_ms:g} ms; applied lag="
+              f"{quantized * 1000 / scan.sample_rate:g} ms on selected direction "
+              f"(sample spacing={1000 / scan.sample_rate:g} ms)", file=sys.stderr)
     with raw_path.open("w") as raw, err_path.open("w") as errors:
-        with subprocess.Popen(command, cwd=args.workdir.resolve(),
-                              stdout=subprocess.PIPE, stderr=errors, text=True) as proc:
-            try:
-                for line in proc.stdout:
-                    raw.write(line)
-                    parsed = parse_result(line)
-                    if parsed is None:
-                        continue
-                    length, amp, phase, snr = parsed
-                    nominal_units = (first + index) * args.step_samples
-                    index += 1
-                    actual_units = nominal_units + lag_units
-                    expected = args.length_samples / args.samples_per_second
-                    if not math.isclose(length, expected, rel_tol=0, abs_tol=1e-6):
-                        raise ValueError(f"{scan.path}: expected {expected:g} s frinZ bins, got {length:g} s; see {raw_path}")
-                    if (actual_units + args.length_samples > scan.duration * args.samples_per_second + 1e-6
-                            or nominal_units + args.length_samples > scan.duration * args.samples_per_second + 1e-6):
-                        continue
-                    epoch = scan.start + timedelta(seconds=nominal_units / args.samples_per_second)
-                    p = pointing(records, times, epoch + timedelta(seconds=length / 2))
-                    if p is None or not scan_direction(p, args.scan_axis):
-                        continue
-                    az, el, vx, vy = p
-                    if abs(az) > args.half_width or abs(el) > args.half_width:
-                        continue
-                    result.append(dict(Epoch=epoch.strftime("%Y/%j %H:%M:%S.%f"),
-                                       Length=length, Amp=amp, Phase=phase, SNR=snr,
-                                       Az_Offset=az, El_Offset=el,
-                                       Az_Rate_arcmin_s=vx, El_Rate_arcmin_s=vy,
-                                       Applied_Lag_ms=lag_units * 1000 / args.samples_per_second))
-            except BaseException:
-                proc.kill()
-                proc.wait()
-                raise
-            status = proc.wait()
-    if status:
-        raise RuntimeError(f"frinZ failed ({status}): {scan.path}; see {err_path}")
-    if index == 0:
-        raise ValueError(f"frinZ returned no measurement rows: {scan.path}; see {raw_path}, {err_path}")
-    print(f"  {index} integrations; {len(result)} retained inside +/-{args.half_width:g}'", flush=True)
+        for index, (command, epoch, p, applied_lag) in enumerate(tasks, start=1):
+            command_text = shlex.join(command)
+            raw.write("# " + command_text + "\n")
+            errors.write("# " + command_text + "\n")
+            completed = subprocess.run(command, cwd=args.workdir.resolve(),
+                                       capture_output=True, text=True)
+            raw.write(completed.stdout)
+            errors.write(completed.stderr)
+            raw.flush()
+            errors.flush()
+            if completed.returncode:
+                raise RuntimeError(f"frinZ failed ({completed.returncode}): {command_text}; see {err_path}")
+            parsed = [value for line in completed.stdout.splitlines()
+                      if (value := parse_result(line)) is not None]
+            if len(parsed) != 1:
+                raise ValueError(f"expected one result per --length/--skip call, got {len(parsed)}; see {raw_path}")
+            length, amp, phase, snr = parsed[0]
+            expected = args.length_samples / scan.sample_rate
+            if not math.isclose(length, expected, rel_tol=0, abs_tol=1e-6):
+                raise ValueError(f"{scan.path}: expected {expected:g} s, got {length:g} s; check XML output rate; see {raw_path}")
+            az, el, vx, vy = p
+            result.append(dict(Epoch=epoch.strftime("%Y/%j %H:%M:%S.%f"),
+                               Length=length, Amp=amp, Phase=phase, SNR=snr,
+                               Az_Offset=az, El_Offset=el,
+                               Az_Rate_arcmin_s=vx, El_Rate_arcmin_s=vy,
+                               Applied_Lag_ms=applied_lag))
+            if index == 1 or index % 50 == 0 or index == len(tasks):
+                print(f"  {index}/{len(tasks)} integrations", flush=True)
     return result
 
 
@@ -269,8 +271,8 @@ def main(argv=None):
     parser.add_argument("--scan-lag-ms", type=float, default=0, help="integration shift [ms] for --forward-direction; positive=later, negative=earlier")
     parser.add_argument("--forward-direction", choices=("increasing", "decreasing"), default="increasing")
     parser.add_argument("--length-samples", type=int, default=10, help="frinZ --length (default: 10)")
-    parser.add_argument("--step-samples", type=int, default=10, help="frinZ --step (default: 10)")
-    parser.add_argument("--samples-per-second", type=float, default=1000, help="correlation output rate (default: 1000; 10 samples = 10 ms)")
+    parser.add_argument("--step-samples", type=int, default=10, help="this script's start spacing in samples; implemented with repeated frinZ --skip (default: 10)")
+    parser.add_argument("--samples-per-second", type=float, default=None, help="override correlation output rate [Hz]; default: XML stream/output")
     parser.add_argument("--half-width", type=float, default=12, help="Az/El half-width [arcmin] (default: 12)")
     parser.add_argument("--db-min", type=float, default=-45)
     parser.add_argument("--frinz", default="frinZ", help="frinZ executable")
@@ -283,10 +285,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if "/" in args.frinz:
         args.frinz = str(Path(args.frinz).resolve())
-    for name in ("samples_per_second", "half_width", "on_length"):
+    for name in ("half_width", "on_length"):
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+    if args.samples_per_second is not None and (not math.isfinite(args.samples_per_second) or args.samples_per_second <= 0):
+        parser.error("--samples-per-second must be finite and positive")
     if args.length_samples <= 0 or args.step_samples <= 0 or not math.isfinite(args.scan_lag_ms):
         parser.error("length/step must be positive and lag finite")
     if not math.isfinite(args.db_min) or args.db_min >= 0:
@@ -298,25 +302,28 @@ def main(argv=None):
         raise ValueError(f"no XML files in {workdir}; specify --xml")
     records = read_prd(prd)
     times = [r[0] for r in records]
-    scans = [s for s in read_scans(workdir, xmls, args.on_length)
+    scans = [s for s in read_scans(workdir, xmls, args.on_length, args.samples_per_second)
              if selected_scan(s, records, times, args.scan_axis, args.half_width)]
     if not scans:
         raise ValueError("no offset .cor files intersect the selected raster square; check PRD/XML/scan axis")
     print(f"Selected {len(scans)} offset .cor files; PRD={prd}")
-    print(f"Integration={args.length_samples / args.samples_per_second * 1000:g} ms; "
-          f"step={args.step_samples / args.samples_per_second * 1000:g} ms")
-    # Validate all directions and lag quantization before executing any command.
-    for scan in scans:
-        command, _, _ = make_command(scan, records, times, args)
+    plans = [(scan, make_tasks(scan, records, times, args)) for scan in scans]
+    plans = [(scan, tasks) for scan, tasks in plans if tasks]
+    if not plans:
+        raise ValueError("no full integration windows inside the selected square")
+    for scan, tasks in plans:
+        print(f"{scan.path.name}: {len(tasks)} calls; output={scan.sample_rate:g} Hz; "
+              f"integration={args.length_samples / scan.sample_rate * 1000:g} ms")
         if args.dry_run:
-            print("+ " + shlex.join(command))
+            for command, _, _, _ in tasks:
+                print("+ " + shlex.join(command))
     if args.dry_run:
         return 0
     outdir = args.outdir or workdir / "beam_analysis"
     outdir.mkdir(parents=True, exist_ok=True)
     rows = []
-    for scan in scans:
-        rows.extend(process_scan(scan, records, times, args, outdir))
+    for scan, tasks in plans:
+        rows.extend(process_scan(scan, tasks, args, outdir))
     if not rows:
         raise ValueError("no frinZ samples retained inside the selected square")
     rows.sort(key=lambda r: r["Epoch"])
@@ -338,3 +345,4 @@ if __name__ == "__main__":
     except (ValueError, OSError, RuntimeError, ET.ParseError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(1)
+
