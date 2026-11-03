@@ -60,6 +60,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from datetime import datetime, timedelta
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
+from scipy.special import j1
 from scipy.interpolate import griddata
 
 # ==========================================
@@ -220,6 +221,10 @@ parser.add_argument(
     help="開口面振幅(dB)の全スライスと中心・開口半径の約半分の位置の断面比較を出力する。\n"
          "各断面の規格化・平滑化は行わない。--slice-apertureにも含まれる。",
 )
+parser.add_argument("--beam-excess-db", type=float, default=8.0,
+                    help="理論ビーム上限を超える異常判定のしきい値 [dB]（既定: 8）")
+parser.add_argument("--beam-min-power-db", type=float, default=-25.0,
+                    help="異常判定の対象とする観測パワーの下限 [dB]（既定: -25）")
 parser.add_argument(
     "--db-factor", type=int, choices=(10, 20), default=20,
     help="振幅比のdB表示係数。20: 20 log10(A/Aref)（既定）、10: 10 log10(A/Aref)。\n"
@@ -293,6 +298,10 @@ if not np.isfinite(args.on_length) or args.on_length <= 0:
 if args.slice_aperture and args.slice_range is not None:
     if not np.isfinite(args.slice_range) or args.slice_range <= 0:
         parser.error("--slice-range は有限の正の値にしてください。")
+if not np.isfinite(args.beam_excess_db) or args.beam_excess_db <= 0:
+    parser.error("--beam-excess-db は有限の正の値にしてください。")
+if not np.isfinite(args.beam_min_power_db) or args.beam_min_power_db > 0:
+    parser.error("--beam-min-power-db は有限の 0 以下の値にしてください。")
 if args.db_min >= 0:
     parser.error("--db-min は 0 未満にしてください。")
 if args.zoom_size <= 0:
@@ -1237,6 +1246,61 @@ snr_grid, _ = average_grid(SNR, mc_layout)
 print(f"[INFO] Grid shape={count_grid.shape}, occupied={np.count_nonzero(valid_cells)}, nearest-filled={np.count_nonzero(~valid_cells)}")
 np.savez_compressed(os.path.join(OUT_DIR, "gridding_diagnostic.npz"), count=count_grid, az_arcmin=tx_arcmin, el_arcmin=ty_arcmin, raw=beam_grid_raw, filled=beam_grid)
 beam_grid_amp = np.abs(beam_grid)
+
+
+def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
+                     output_dir, excess_db, min_power_db):
+    """Report bright excesses over a uniform circular aperture model."""
+    az, el = np.meshgrid(az_axis, el_axis)
+    amplitude = np.abs(beam)
+    measured = occupied & np.isfinite(amplitude)
+    # Estimate the reference peak near the nominal pointing, away from spikes.
+    core = measured & (np.hypot(az, el) <= 8.0)
+    if not np.any(core):
+        print("[WARN] Beam power check skipped: no measured cells within 8 arcmin.", file=sys.stderr)
+        return
+    iy, ix = np.unravel_index(np.argmax(np.where(core, amplitude, -np.inf)), beam.shape)
+    reference = amplitude[iy, ix]
+    if reference <= 0:
+        print("[WARN] Beam power check skipped: main beam peak is zero.", file=sys.stderr)
+        return
+
+    radius = np.hypot(az - az[iy, ix], el - el[iy, ix]) * arcmin_to_rad
+    # Allow one grid cell of radial mismatch so Airy nulls do not dominate.
+    tolerance = np.hypot(SCAN_STEP_AZ, SCAN_STEP_EL) * arcmin_to_rad
+    model_power = np.zeros_like(radius)
+    for shift in np.linspace(-tolerance, tolerance, 17):
+        u = np.pi * diameter / wavelength * np.maximum(radius + shift, 0)
+        response = np.divide(2 * j1(u), u, out=np.ones_like(u), where=u != 0)
+        model_power = np.maximum(model_power, response**2)
+    with np.errstate(divide="ignore"):
+        observed_db = 20 * np.log10(amplitude / reference)
+        model_db = 10 * np.log10(model_power)
+    difference_db = observed_db - model_db
+    flagged = (measured & (radius >= 1.22 * wavelength / diameter)
+               & (observed_db >= min_power_db) & (difference_db >= excess_db))
+    report = pd.DataFrame({
+        "az_arcmin": az[flagged], "el_arcmin": el[flagged],
+        "observed_power_db": observed_db[flagged],
+        "model_envelope_power_db": model_db[flagged],
+        "excess_db": difference_db[flagged],
+    }).sort_values("excess_db", ascending=False)
+    path = os.path.join(output_dir, "beam_power_anomalies.csv")
+    report.to_csv(path, index=False)
+    if report.empty:
+        print("[INFO] Beam power check: no bright excesses.")
+        return
+    print(f"[ERROR] Beam power check: {len(report)} anomalous measured cells. Details: {path}",
+          file=sys.stderr)
+    for row in report.head(10).itertuples(index=False):
+        print(f"[ERROR] Az={row.az_arcmin:+.2f}', El={row.el_arcmin:+.2f}': "
+              f"observed {row.observed_power_db:.1f} dB, "
+              f"model envelope {row.model_envelope_power_db:.1f} dB "
+              f"(excess {row.excess_db:+.1f} dB)", file=sys.stderr)
+
+
+check_beam_power(beam_grid_raw, valid_cells, tx_arcmin, ty_arcmin, D, wavelength,
+                 OUT_DIR, args.beam_excess_db, args.beam_min_power_db)
 
 
 def evaluate_main_beam(amp_map, occupied, az_axis, el_axis, snr_map,
