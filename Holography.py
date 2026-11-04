@@ -196,8 +196,9 @@ parser.add_argument(
     help="開口面の極座標表示を追加して output/polar/ 以下に保存する。",
 )
 parser.add_argument(
-    "--slice-beam", action="store_true",
-    help="主走査軸に沿う各断面を上段:振幅(dB)・下段:位相の図として slice/ に出力する。振幅は全測定点の最大値を0 dBとする。",
+    "--slice-beam", "--beam-slice", dest="slice_beam", action="store_true",
+    help="Az・El両方向の断面を上段:振幅(dB)・下段:位相でslice/の方向別ディレクトリに出力する。\n"
+         "実測セルの格子平均を使用し、振幅は全測定点の最大値を0 dBとする。",
 )
 parser.add_argument("--scan-axis", choices=("az", "el"), default="az",
                     help="ビームの主走査軸（既定: az）。格子化と断面図にも使用。")
@@ -1194,36 +1195,6 @@ if GENERATE_SLICES:
         save_figure(fig, os.path.join(OUT_DIR, f"{cross_name.lower()}0_{main_name.lower()}_scan_dB_phase.png"), dpi=150)
         plt.close(fig)
 
-    slice_amplitude = np.abs(E_corr)
-    slice_peak = np.nanmax(slice_amplitude)
-    if not np.isfinite(slice_peak) or slice_peak <= 0:
-        slice_peak = 1.0
-    with np.errstate(divide="ignore", invalid="ignore"):
-        slice_amplitude_db = np.clip(amplitude_to_db(slice_amplitude, slice_peak), DB_MIN, 0.0)
-
-    for el_val_orig in np.unique(cross_orig):
-        mask_el = (cross_orig == el_val_orig)
-        sort_idx = np.argsort(main_shifted[mask_el])
-        Az_sorted = main_shifted[mask_el][sort_idx]
-        E_sorted = E_corr[mask_el][sort_idx]
-        el_val_actual = np.mean(cross_shifted[mask_el])
-        el_label = f"{cross_name}{el_val_actual:+.1f}arcmin".replace("+", "p").replace("-", "m").replace(".", "_")
-        fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
-        axes[0].plot(Az_sorted, slice_amplitude_db[mask_el][sort_idx],
-                     marker='o', markersize=3, linewidth=1.0, color='black')
-        axes[0].set_ylabel("Amplitude [dB]")
-        axes[0].set_ylim(DB_MIN, 2.0)
-        axes[1].plot(Az_sorted, np.rad2deg(np.angle(E_sorted)),
-                     marker='o', markersize=3, linewidth=1.0, color='black')
-        axes[1].set_xlabel(f"{main_name} offset [arcmin]")
-        axes[1].set_ylabel("Phase [deg]")
-        axes[1].set_ylim(-180, 180)
-        for ax in axes:
-            ax.grid(True, linestyle='--', alpha=0.5)
-        format_field_slice_figure(fig, axes, DB_MIN)
-        save_figure(fig, os.path.join(SLICE_DIR, f"{el_label}.png"), dpi=150)
-        plt.close(fig)
-
 # =========================
 # 格子化 (アベレージングによる強固なグリッド作成)
 # =========================
@@ -1247,6 +1218,44 @@ snr_grid, _ = average_grid(SNR, mc_layout)
 print(f"[INFO] Grid shape={count_grid.shape}, occupied={np.count_nonzero(valid_cells)}, nearest-filled={np.count_nonzero(~valid_cells)}")
 np.savez_compressed(os.path.join(OUT_DIR, "gridding_diagnostic.npz"), count=count_grid, az_arcmin=tx_arcmin, el_arcmin=ty_arcmin, raw=beam_grid_raw, filled=beam_grid)
 beam_grid_amp = np.abs(beam_grid)
+
+
+def save_bidirectional_beam_slices(beam, occupied, az_axis, el_axis,
+                                   reference, output_dir):
+    """Plot both native-grid directions, leaving unmeasured cells as gaps."""
+    if not np.isfinite(reference) or reference <= 0:
+        reference = 1.0
+    amplitude_db = np.clip(amplitude_to_db(np.abs(beam), reference), DB_MIN, 0)
+    phase_deg = np.angle(beam, deg=True)
+    for axis_name, coord, fixed_axis, amp, phase, valid in (
+        ("Az", az_axis, el_axis, amplitude_db, phase_deg, occupied),
+        ("El", el_axis, az_axis, amplitude_db.T, phase_deg.T, occupied.T),
+    ):
+        fixed_name = "El" if axis_name == "Az" else "Az"
+        directory = os.path.join(output_dir, f"along_{axis_name}_fixed_{fixed_name}")
+        os.makedirs(directory, exist_ok=True)
+        for index, fixed in enumerate(fixed_axis):
+            if not np.any(valid[index]):
+                continue
+            fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+            for ax, values in zip(axes, (amp[index], phase[index])):
+                ax.plot(coord, np.where(valid[index], values, np.nan),
+                        "o-", color="black", markersize=3, linewidth=1.0)
+                ax.grid(True, linestyle="--", alpha=0.5)
+            axes[1].set_xlabel(f"{axis_name} offset [arcmin]")
+            axes[1].set_ylabel("Phase [deg]")
+            format_field_slice_figure(fig, axes, DB_MIN)
+            label = f"{fixed_name}{index:03d}_{fixed:+.3f}arcmin"
+            label = label.replace("+", "p").replace("-", "m").replace(".", "_")
+            save_figure(fig, os.path.join(directory, label + ".png"), dpi=150)
+            plt.close(fig)
+        print(f"[INFO] Beam {axis_name} slices: {directory}")
+
+
+if GENERATE_SLICES:
+    save_bidirectional_beam_slices(
+        beam_grid_raw, valid_cells, tx_arcmin, ty_arcmin,
+        np.nanmax(np.abs(E_corr)), SLICE_DIR)
 
 
 def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
