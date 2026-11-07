@@ -611,15 +611,18 @@ def save_aperture_amplitude_slices(x_axis, y_axis, field, diameter, center_size,
           "各断面の基準振幅はslices.csvに保存。追加補間・平滑化なし。")
 
 
-def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
-                             diameter, output_dir, db_min, slice_range=20.0):
-    """Place y cuts to the left and x cuts below matching aperture maps.
+def save_field_map_slices(x_axis, y_axis, field, phase_degrees,
+                             diameter, output_dir, db_min, slice_range=20.0, *, beam_map=False):
+    """Place vertical and horizontal cuts beside matching field maps.
 
     All amplitude panels share the full-field peak as their reference.
-    Phase panels show the same wrapped, tilt-corrected phase as the map.
+    Phase panels show the same wrapped phase as the map.
     Cuts use the nearest native-grid row/column without interpolation.
     """
     limit = 20.0 if slice_range is None else slice_range
+    x_label = "Az offset [arcmin]" if beam_map else "x [m]"
+    y_label = "El offset [arcmin]" if beam_map else "y [m]"
+    horizontal_limits = (limit, -limit) if beam_map else (-limit, limit)
     ix = int(np.argmin(np.abs(x_axis)))
     iy = int(np.argmin(np.abs(y_axis)))
     amplitude = np.abs(field)
@@ -638,7 +641,7 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
                              panel_width/width, panel_height/height])
     for offset, values, cmap, lower, upper, label, title in (
         (0.0, amplitude_db, "inferno", db_min, 0, "Amplitude [dB]", "Amplitude"),
-        (9.8, phase_wrapped, "twilight", -180, 180, "Phase [deg]", "Phase (tilt removed)"),
+        (9.8, phase_wrapped, "twilight", -180, 180, "Phase [deg]", "Phase"),
     ):
         left, bottom = offset + 3.1, 2.8
         ax_map = add_axes(left, bottom, side, side)
@@ -649,32 +652,34 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
                            cmap=cmap, vmin=lower, vmax=upper,
                            interpolation="nearest", aspect="equal")
         fig.colorbar(im, cax=ax_color, label=label)
-        ax_map.add_patch(plt.Circle((0, 0), diameter/2, fill=False,
-                                   color="black", linestyle="--", linewidth=1.2))
+        if not beam_map:
+            ax_map.add_patch(plt.Circle((0, 0), diameter/2, fill=False,
+                                       color="black", linestyle="--", linewidth=1.2))
         ax_map.axvline(x_axis[ix], color="black", linestyle=":", linewidth=0.8)
         ax_map.axhline(y_axis[iy], color="black", linestyle=":", linewidth=0.8)
-        ax_map.set(xlim=(-limit, limit), ylim=(-limit, limit),
-                   xlabel="x [m]", ylabel="y [m]", title=title)
+        ax_map.set(xlim=horizontal_limits, ylim=(-limit, limit),
+                   xlabel=x_label, ylabel=y_label, title=title)
         ax_y.plot(values[:, ix], y_axis, "o-", color="black",
                   markersize=3, linewidth=1.0)
         ax_x.plot(x_axis, values[iy, :], "o-", color="black",
                   markersize=3, linewidth=1.0)
-        ax_y.set(ylim=(-limit, limit), xlim=(lower, upper),
-                 xlabel=label, ylabel="y [m]")
-        ax_x.set(xlim=(-limit, limit), ylim=(lower, upper),
-                 xlabel="x [m]", ylabel=label)
+        ax_y.set(ylim=(-limit, limit), xlim=(upper, lower),
+                 xlabel=label, ylabel=y_label)
+        ax_x.set(xlim=horizontal_limits, ylim=(lower, upper),
+                 xlabel=x_label, ylabel=label)
         # Apply the same reference lines as the standalone cuts, transposed
         # for the y profile so all its labels remain upright.
-        draw_aperture_radius_lines(ax_x, diameter, y_axis[iy])
-        shade_aperture_slice_center(ax_x, y_axis[iy])
-        for position in (-diameter/2, diameter/2):
-            ax_y.axhline(position, color="black", linestyle="--", linewidth=1)
-        if diameter == 32 and abs(x_axis[ix]) < 0.9 * diameter/2:
-            edge = np.sqrt((0.9 * diameter/2)**2 - x_axis[ix]**2)
-            for position in (-edge, edge):
-                ax_y.axhline(position, color="black", linestyle=":", linewidth=1)
-        if abs(x_axis[ix]) <= 1.5:
-            ax_y.axhspan(-1.5, 1.5, color="0.85", zorder=0)
+        if not beam_map:
+            draw_aperture_radius_lines(ax_x, diameter, y_axis[iy])
+            shade_aperture_slice_center(ax_x, y_axis[iy])
+            for position in (-diameter/2, diameter/2):
+                ax_y.axhline(position, color="black", linestyle="--", linewidth=1)
+            if diameter == 32 and abs(x_axis[ix]) < 0.9 * diameter/2:
+                edge = np.sqrt((0.9 * diameter/2)**2 - x_axis[ix]**2)
+                for position in (-edge, edge):
+                    ax_y.axhline(position, color="black", linestyle=":", linewidth=1)
+            if abs(x_axis[ix]) <= 1.5:
+                ax_y.axhspan(-1.5, 1.5, color="0.85", zorder=0)
         value_step = 10 if cmap == "inferno" else 100
         ax_y.xaxis.set_major_locator(MultipleLocator(20 if cmap == "inferno" else value_step))
         ax_y.xaxis.label.set_fontsize(14)
@@ -688,10 +693,13 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
             ax.yaxis.set_major_locator(MultipleLocator(10))
         for ax in (ax_y, ax_x):
             ax.grid(True, alpha=0.25)
-    path = save_figure(fig, os.path.join(output_dir, "aperture_map_slices.png"), dpi=150)
+    filename = "aperture_map_slices.png"
+    if beam_map:
+        filename = f"beam_map_slices_{2*limit:g}arcmin.png"
+    path = save_figure(fig, os.path.join(output_dir, filename), dpi=150)
     plt.close(fig)
-    print(f"[INFO] 開口面マップ＋断面: {path}; "
-          f"x={x_axis[ix]:+.4f} m, y={y_axis[iy]:+.4f} m; "
+    print(f"[INFO] マップ＋断面: {path}; "
+          f"{x_label}={x_axis[ix]:+.4f}, {y_label}={y_axis[iy]:+.4f}; "
           f"振幅はマップ全体の最大値を基準、{DB_FACTOR} log10表示。")
 
 
@@ -1257,6 +1265,15 @@ if GENERATE_SLICES:
         beam_grid_raw, valid_cells, tx_arcmin, ty_arcmin,
         np.nanmax(np.abs(E_corr)), SLICE_DIR)
 
+if GENERATE_SLICES:
+    save_field_map_slices(
+        tx_arcmin, ty_arcmin, beam_grid, np.angle(beam_grid, deg=True),
+        D, OUT_DIR, DB_MIN, slice_range=60.0, beam_map=True)
+    if ZOOM_SIZE_ARCMIN is not None:
+        save_field_map_slices(
+            tx_arcmin, ty_arcmin, beam_grid, np.angle(beam_grid, deg=True),
+            D, OUT_DIR, DB_MIN, slice_range=ZOOM_SIZE_ARCMIN / 2, beam_map=True)
+
 
 def check_beam_power(beam, occupied, az_axis, el_axis, diameter, wavelength,
                      output_dir, excess_db, min_power_db):
@@ -1784,7 +1801,7 @@ if GENERATE_APERTURE_SLICES or args.slice_aperture_amp:
 # 開口面電場分布（位相）の全スライスプロット出力
 # ==========================================
 if GENERATE_APERTURE_SLICES:
-    save_aperture_map_slices(
+    save_field_map_slices(
         x, y, aperture, phase_deg_2d, D, OUT_DIR, DB_MIN,
         slice_range=APERTURE_SLICE_RANGE_M)
     AP_SLICE_X_DIR = os.path.join(OUT_DIR, "aperture_slice", "along_X_fixed_Y")
