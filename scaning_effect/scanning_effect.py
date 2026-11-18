@@ -241,7 +241,7 @@ def main() -> int:
     p.add_argument("--scan-axis", choices=("az", "el"), default="az",
                    help="varying axis within each scan leg (default: az)")
     p.add_argument("--min-snr", type=float, default=3.0, help="minimum SNR for lag fit")
-    p.add_argument("--max-lag-ms", type=float, default=1000.0)
+    p.add_argument("--max-lag-ms", type=float, default=2000.0)
     p.add_argument("--lag-step-ms", type=float, default=5.0)
     p.add_argument("--grid-size", type=int, default=121)
     args = p.parse_args()
