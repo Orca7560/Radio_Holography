@@ -605,8 +605,8 @@ def main() -> int:
     p.add_argument("--min-snr", type=float, default=3.0,
                     help="minimum SNR for a sample to be used when fitting the lag "
                          "(default: 3.0)")
-    p.add_argument("--max-lag-ms", type=float, default=1000.0,
-                    help="search lag candidates over +/- this many ms (default: 1000.0)")
+    p.add_argument("--max-lag-ms", type=float, default=2000.0,
+                    help="search lag candidates over +/- this many ms (default: 2000.0)")
     p.add_argument("--lag-step-ms", type=float, default=5.0,
                     help="fine step [ms] for each direction (default: 5.0); coarse search uses at least 20 ms")
     p.add_argument("--grid-size", type=int, default=121,

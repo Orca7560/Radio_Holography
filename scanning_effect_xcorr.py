@@ -15,7 +15,7 @@ are not independently determined absolute instrumental delays.
 
 Example:
   python3 scanning_effect_xcorr.py test_data/beam_184.txt test_data/schedule_184.skd
-      --outdir test_result/xcorr_184 --max-lag-ms 1000 --lag-step-ms 1
+      --outdir test_result/xcorr_184 --max-lag-ms 2000 --lag-step-ms 1
 """
 
 from __future__ import annotations
@@ -220,8 +220,8 @@ def main() -> int:
     parser.add_argument("schedule", type=Path, help="SKD file with $SKED offsets")
     parser.add_argument("--outdir", type=Path, default=Path("scanning_xcorr_result"),
                         help="separate result directory (default: scanning_xcorr_result)")
-    parser.add_argument("--max-lag-ms", type=float, default=1000,
-                        help="search each moving direction from -MAX to +MAX ms (default: 1000)")
+    parser.add_argument("--max-lag-ms", type=float, default=2000,
+                        help="search each moving direction from -MAX to +MAX ms (default: 2000)")
     parser.add_argument("--lag-step-ms", type=float, default=5,
                         help="lag spacing in ms (default: 5)")
     parser.add_argument("--match-tolerance", type=float, default=0.006,
