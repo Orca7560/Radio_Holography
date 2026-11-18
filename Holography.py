@@ -850,6 +850,24 @@ except FileNotFoundError:
     raise FileNotFoundError(f"エラー: {BEAM_FILE} が見つかりません。")
 
 beam.columns = beam.columns.str.strip()
+# 積分スクリプト出力は既に各観測のONで較正されている。
+integrated_beam = "Beam_State" in beam.columns
+if integrated_beam:
+    metadata = {"Beam_State", "Antenna_m", "Grid_Az_arcmin", "Grid_El_arcmin"}
+    if not metadata.issubset(beam.columns) or beam.empty:
+        raise ValueError("積分beamの較正・格子メタデータが不完全です。")
+    if not beam["Beam_State"].eq("on_calibrated").all():
+        raise ValueError("未知または混在したBeam_Stateです。")
+    for name in metadata - {"Beam_State"}:
+        values = pd.to_numeric(beam[name], errors="coerce").to_numpy()
+        if not np.isfinite(values).all() or np.unique(values).size != 1 or values[0] <= 0:
+            raise ValueError(f"積分beamの{name}が不正です。")
+    if float(beam["Antenna_m"].iloc[0]) != args.antenna:
+        raise ValueError("積分時のアンテナ径と --antenna が一致しません。")
+    if args.mc_trials:
+        raise ValueError("積分済みbeamは --mc-trials に未対応です。元の観測ごとのON較正誤差を保持していません。")
+    if args.on_phase_linear_fit or args.on_amp_min is not None or args.exclude_on_time or not args.include_center_crossings:
+        raise ValueError("積分済みbeamにはON選別・補正オプションを指定できません。積分時に指定してください。")
 beam["Epoch"] = pd.to_datetime(beam["Epoch"], format="%Y/%j %H:%M:%S.%f", errors="coerce").fillna(
     pd.to_datetime(beam["Epoch"], format="%Y/%j %H:%M:%S", errors="coerce")
 )
@@ -908,17 +926,23 @@ def estimate_scan_steps_from_beam(df, cross_levels, scan_axis):
 beam = beam.sort_values("Epoch")
 beam["Az"] = beam["Az_Offset"]
 beam["El"] = beam["El_Offset"]
-cross_axis = "El" if args.scan_axis == "az" else "Az"
-cross_levels = stationary_cross_levels(beam, args.scan_axis)
-if len(cross_levels) < 2:
-    raise ValueError(f"PRD座標から2本以上の一定{cross_axis}走査列を検出できませんでした。--scan-axis を確認してください。")
-# 折返し区間の横断座標を、最寄りの本走査列へ割り当てる。
-beam[f"{cross_axis}_PRD_continuous"] = beam[cross_axis]
-beam[cross_axis] = cross_levels[np.abs(beam[cross_axis].to_numpy()[:, None] - cross_levels).argmin(axis=1)]
-df = beam.copy()
-SCAN_STEP_AZ, SCAN_STEP_EL = estimate_scan_steps_from_beam(df, cross_levels, args.scan_axis)
-print(f"beam.txtのPRD補正済み座標から推定したスキャン間隔 -> Az: {SCAN_STEP_AZ} arcmin, El: {SCAN_STEP_EL} arcmin")
-print(f"[INFO] PRDの折返し中の{cross_axis}座標は、最寄りの本走査列へスナップして格子化します。")
+if integrated_beam:
+    df = beam.copy()
+    SCAN_STEP_AZ = float(beam["Grid_Az_arcmin"].iloc[0])
+    SCAN_STEP_EL = float(beam["Grid_El_arcmin"].iloc[0])
+    print(f"[INFO] 積分beam: ON較正済み、格子間隔 Az={SCAN_STEP_AZ:g}, El={SCAN_STEP_EL:g} arcmin")
+else:
+    cross_axis = "El" if args.scan_axis == "az" else "Az"
+    cross_levels = stationary_cross_levels(beam, args.scan_axis)
+    if len(cross_levels) < 2:
+        raise ValueError(f"PRD座標から2本以上の一定{cross_axis}走査列を検出できませんでした。--scan-axis を確認してください。")
+    # 折返し区間の横断座標を、最寄りの本走査列へ割り当てる。
+    beam[f"{cross_axis}_PRD_continuous"] = beam[cross_axis]
+    beam[cross_axis] = cross_levels[np.abs(beam[cross_axis].to_numpy()[:, None] - cross_levels).argmin(axis=1)]
+    df = beam.copy()
+    SCAN_STEP_AZ, SCAN_STEP_EL = estimate_scan_steps_from_beam(df, cross_levels, args.scan_axis)
+    print(f"beam.txtのPRD補正済み座標から推定したスキャン間隔 -> Az: {SCAN_STEP_AZ} arcmin, El: {SCAN_STEP_EL} arcmin")
+    print(f"[INFO] PRDの折返し中の{cross_axis}座標は、最寄りの本走査列へスナップして格子化します。")
 
 # =========================
 # 変数抽出 ＆ 空間ズレ補正 ＆ 位相補正
@@ -985,27 +1009,37 @@ for excluded_time in dict.fromkeys(args.exclude_on_time):
     else:
         print(f"[WARN] --exclude-on-time {excluded_time}: 該当する採用候補のON点がありません。")
 on_selection_mask = on_mask & on_amplitude_mask & ~on_exclusion_mask
+if integrated_beam:
+    stationary_on_mask[:] = False
+    on_selection_mask[:] = False
 on_idx = np.flatnonzero(on_selection_mask)
-print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
-      f"{np.count_nonzero(stationary_on_mask)}点、{on_amplitude_label} の停止ON候補 "
-      f"{np.count_nonzero(stationary_on_mask & on_selection_mask)}点（時刻指定の除外後）")
-if args.include_center_crossings:
-    print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
-          f"{np.count_nonzero(on_selection_mask & ~stationary_on_mask)}点、"
-          f"合計 {len(on_idx)}点")
+if not integrated_beam:
+    print(f"[INFO] 較正用ON: 中心座標かつLength={args.on_length:g} s: "
+          f"{np.count_nonzero(stationary_on_mask)}点、{on_amplitude_label} の停止ON候補 "
+          f"{np.count_nonzero(stationary_on_mask & on_selection_mask)}点（時刻指定の除外後）")
+    if args.include_center_crossings:
+        print(f"[INFO] 中心通過点も位相補正に使用: 追加 "
+              f"{np.count_nonzero(on_selection_mask & ~stationary_on_mask)}点、"
+              f"合計 {len(on_idx)}点")
 E_corr = E.copy()
 
 # 通常解析とMCで同じON補正関数を使用する。
-E_corr, phase_reference, phase_slope = calibrate_phase(E, times_sec, on_idx, ON_PHASE_LINEAR_FIT)
-E_corr, amplitude_reference = calibrate_amplitude(E_corr, times_sec, on_idx)
-print(f"[INFO] ON amplitude normalization: {amplitude_reference.min():.6g} to {amplitude_reference.max():.6g}")
-reference_label = "ON linear interpolation (correction)"
-if phase_reference is not None and ON_PHASE_LINEAR_FIT:
-    reference_label = "All ON points: linear fit (correction)"
-    print(f"[INFO] {on_amplitude_label} のON点 {len(on_idx)} 点から位相を直線近似: "
-          f"{np.rad2deg(phase_slope) * 3600:+.3f} deg/hour")
-if phase_reference is None:
-    print(f"[WARN] 位相補正に使えるON点 ({on_amplitude_label}) が{len(on_idx)}点のため、補正しません。")
+if integrated_beam:
+    phase_reference, phase_slope = None, None
+    amplitude_reference = np.ones(len(E))
+    reference_label = "Already ON calibrated"
+    print("[INFO] 各入力ファイルでON振幅・位相補正済みのため、再補正を省略します。")
+else:
+    E_corr, phase_reference, phase_slope = calibrate_phase(E, times_sec, on_idx, ON_PHASE_LINEAR_FIT)
+    E_corr, amplitude_reference = calibrate_amplitude(E_corr, times_sec, on_idx)
+    print(f"[INFO] ON amplitude normalization: {amplitude_reference.min():.6g} to {amplitude_reference.max():.6g}")
+    reference_label = "ON linear interpolation (correction)"
+    if phase_reference is not None and ON_PHASE_LINEAR_FIT:
+        reference_label = "All ON points: linear fit (correction)"
+        print(f"[INFO] {on_amplitude_label} のON点 {len(on_idx)} 点から位相を直線近似: "
+              f"{np.rad2deg(phase_slope) * 3600:+.3f} deg/hour")
+    if phase_reference is None:
+        print(f"[WARN] 位相補正に使えるON点 ({on_amplitude_label}) が{len(on_idx)}点のため、補正しません。")
 # MCは位相補正・座標範囲の選別前の全測定点から始める。
 mc_input_field = E.copy() if args.mc_trials else None
 mc_input_times = times_sec.copy() if args.mc_trials else None
@@ -1024,9 +1058,9 @@ ax_amp.scatter(time_axis, amp_values, s=3, c="0.65", alpha=0.45,
 ax_amp.scatter(time_axis[plot_on_idx], amp_values[plot_on_idx], s=48,
                marker="^", facecolors="black", edgecolors="black", linewidths=1.0,
                zorder=3, label="ON used for phase correction")
-ax_amp.plot(time_axis, amplitude_reference, color="black", linewidth=1.2, label="ON amplitude reference")
+ax_amp.plot(time_axis, amplitude_reference, color="black", linewidth=1.2, label="Unit reference (already calibrated)" if integrated_beam else "ON amplitude reference")
 ax_amp.legend()
-ax_amp.set_ylabel("Raw amplitude")
+ax_amp.set_ylabel("ON-calibrated amplitude" if integrated_beam else "Raw amplitude")
 ax_amp.grid(True, alpha=0.25)
 
 
@@ -1044,7 +1078,7 @@ if phase_reference is not None:
     ax_phase.plot(time_axis, reference_deg, color="black", linestyle="-", linewidth=1.6,
                   label=reference_label)
 ax_phase.set_ylim(-180, 180)
-ax_phase.set_ylabel("Raw phase [deg]")
+ax_phase.set_ylabel("ON-calibrated phase [deg]" if integrated_beam else "Raw phase [deg]")
 ax_phase.set_xlabel("Time")
 ax_phase.grid(True, alpha=0.25)
 
@@ -2482,6 +2516,7 @@ if GENERATE_POLAR_MAPS:
         print(f'[POLAR] {os.path.join(polar_dir, "aperture_polar_data.npz")}')
 
 print('完了しました。')
+
 
 
 
