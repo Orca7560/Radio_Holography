@@ -18,7 +18,7 @@ static void help(){std::cout <<
 "  --output, --out DIR Output directory (default: scanning_result).\n"
 "                       Creates matched_and_corrected.csv and lag_search.csv.\n\n"
 "Lag search:\n"
-"  --max-lag-ms MS     Search range: -MS to +MS (default: 1000).\n"
+"  --max-lag-ms MS     Search range: -MS to +MS (default: 2000).\n"
 "  --lag-step-ms MS    Search interval (default: 5).\n"
 "  --min-snr N         Minimum SNR used for the fit (default: 3).\n"
 "  --scan-axis az|el   Axis varied during each scan (default: az).\n"
@@ -35,7 +35,7 @@ int main(int argc,char**argv){
   std::string out=arg(argc,argv,"--output","--out","scanning_result");mkdir_p(out);
   std::string scan_axis=arg(argc,argv,"--scan-axis","","az");
   if(scan_axis!="az"&&scan_axis!="el")throw std::runtime_error("--scan-axis must be az or el");
-  double maxlag=std::stod(arg(argc,argv,"--max-lag-ms","", "1000")), step=std::stod(arg(argc,argv,"--lag-step-ms","", "5")), mins=std::stod(arg(argc,argv,"--min-snr","", "3"));
+  double maxlag=std::stod(arg(argc,argv,"--max-lag-ms","", "2000")), step=std::stod(arg(argc,argv,"--lag-step-ms","", "5")), mins=std::stod(arg(argc,argv,"--min-snr","", "3"));
   std::ifstream f(ip);std::string l;if(!std::getline(f,l))throw std::runtime_error("empty input");auto hd=split(l);std::map<std::string,int>col;for(int i=0;i<(int)hd.size();++i)col[trim(hd[i])]=i;
   for(auto n:{"Epoch","Amp","Phase","SNR"})if(!col.count(n))throw std::runtime_error("missing column "+std::string(n));
   std::vector<S>a;while(std::getline(f,l)){auto v=split(l);if((int)v.size()<(int)hd.size())continue;try{S sample; sample.t=epoch(v[col["Epoch"]]); sample.amp=std::stod(v[col["Amp"]]); sample.phase=std::stod(v[col["Phase"]]); sample.snr=std::stod(v[col["SNR"]]); a.push_back(sample);}catch(...){}}
