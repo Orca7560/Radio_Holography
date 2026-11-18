@@ -21,7 +21,7 @@ El方向に走査する観測では `--scan-axis el` を指定します（省略
 python scanning_effect.py correlation_summary.csv schedule.skd --scan-axis el --outdir scan_el
 ```
 
-標準設定では、時刻を 6 ms 以内で対応付け、SNR 3 以上のデータを使い、\(-1000\)〜\(+1000\) ms の実効遅れを 5 ms 刻みで探索します。必要に応じて、例えば次のように変更できます。
+標準設定では、時刻を 6 ms 以内で対応付け、SNR 3 以上のデータを使い、\(-2000\)〜\(+2000\) ms の実効遅れを 5 ms 刻みで探索します。必要に応じて、例えば次のように変更できます。
 
 ```bash
 python scanning_effect.py correlation_summary.csv schedule.skd \
