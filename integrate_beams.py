@@ -17,18 +17,37 @@ def read_and_calibrate(path, args):
     required = ["Epoch", "Length", "Amp", "Phase", "SNR", "Az_Offset", "El_Offset"]
     missing = set(required) - set(data.columns)
     if missing:
-        raise ValueError(f"{path}: 必須列がありません: {', '.join(sorted(missing))}")
+        raise ValueError(f"必須列がありません: {', '.join(sorted(missing))}")
     if "Beam_State" in data:
-        raise ValueError(f"{path}: 積分済み入力は使用できません。元のbeam.txtを指定してください。")
+        raise ValueError(f"積分済み入力は使用できません。元のbeam.txtを指定してください。")
     epoch = data["Epoch"]
     data["Epoch"] = pd.to_datetime(epoch, format="%Y/%j %H:%M:%S.%f", errors="coerce").fillna(
         pd.to_datetime(epoch, format="%Y/%j %H:%M:%S", errors="coerce"))
     for column in required[1:]:
         data[column] = pd.to_numeric(data[column], errors="coerce")
-    if data.empty or data["Epoch"].isna().any() or not np.isfinite(data[required[1:]].to_numpy()).all():
-        raise ValueError(f"{path}: 空の入力、無効な時刻または数値があります。")
-    if (data.Length <= 0).any() or (data.Amp < 0).any() or (data.SNR <= 0).any():
-        raise ValueError(f"{path}: Length > 0、Amp >= 0、SNR > 0 が必要です。")
+    if data.empty:
+        raise ValueError("入力データが空です。")
+    # SNR is noise metadata, not an integration weight. Missing/zero SNR must
+    # not discard an otherwise valid complex-field measurement.
+    invalid = {"Epoch": data["Epoch"].isna().to_numpy()}
+    for column in required[1:]:
+        if column == "SNR":
+            continue
+        values = data[column].to_numpy()
+        bad = ~np.isfinite(values)
+        if column == "Length":
+            bad |= values <= 0
+        elif column == "Amp":
+            bad |= values < 0
+        invalid[column] = bad
+    problems = []
+    for column, bad in invalid.items():
+        if np.any(bad):
+            positions = np.flatnonzero(bad)
+            examples = ", ".join(f"{i + 2}行目={data.iloc[i][column]}" for i in positions[:5])
+            problems.append(f"{column}: {len(positions)}件 ({examples})")
+    if problems:
+        raise ValueError("入力値が不正です（ヘッダーを1行目として表示）: " + "; ".join(problems))
     data = data.sort_values("Epoch").copy()
     center = (data.Az_Offset == 0) & (data.El_Offset == 0)
     stationary = center & np.isclose(data.Length, args.on_length, rtol=0, atol=1e-6)
@@ -42,11 +61,33 @@ def read_and_calibrate(path, args):
     field, _, _ = calibrate_phase(field, times, indices, args.on_phase_linear_fit)
     field, reference = calibrate_amplitude(field, times, indices)
     data["field"] = field
-    # Mean-amplitude SNR convention used by Holography. ON-reference errors are not included.
-    data["sigma"] = np.sqrt(2 / np.pi) * data.Amp.to_numpy() / data.SNR.to_numpy() / reference
+    data["reference"] = reference
     data = data.loc[~stationary].copy()
+    # Estimate missing A/SNR from valid raster points of the same exposure,
+    # before normalization, as in holography_mc.noise_sigmas. Unknown noise
+    # stays unknown; it never changes the integrated field or its weights.
+    amplitude = data.Amp.to_numpy()
+    snr = data.SNR.to_numpy()
+    lengths = data.Length.to_numpy()
+    sigma = np.full(len(data), np.nan)
+    valid = np.isfinite(snr) & (snr > 0) & (amplitude > 0)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        sigma[valid] = np.sqrt(2 / np.pi) * amplitude[valid] / snr[valid]
+    valid &= np.isfinite(sigma) & (sigma > 0)
+    sigma[~valid] = np.nan
+    estimated = 0
+    for index in np.flatnonzero(~valid):
+        peers = valid & np.isclose(lengths, lengths[index], rtol=0, atol=1e-6)
+        if np.any(peers):
+            sigma[index] = np.median(sigma[peers])
+            estimated += 1
+    data["sigma"] = sigma / data.reference.to_numpy()
+    if np.any(~valid):
+        print(f"[WARN] {path}: 雑音を計算できない走査点 {np.count_nonzero(~valid)}点 "
+              f"（SNR <= 0・欠損、またはAmp=0等）。同じLengthから{estimated}点の雑音を推定。"
+              f"残り{np.count_nonzero(~np.isfinite(sigma))}点は雑音不明として積分に残します。")
     if data.empty:
-        raise ValueError(f"{path}: 停止ON以外の走査点がありません。")
+        raise ValueError(f"停止ON以外の走査点がありません。")
     print(f"{path}: ON {len(indices)}点で較正、走査点 {len(data)}点")
     return data
 
@@ -85,6 +126,7 @@ def integrate(args):
         exposure = group.Length.sum()
         weights = group.Length.to_numpy() / exposure
         field = np.sum(weights * group.field.to_numpy())
+        noise_known = np.isfinite(group.sigma.to_numpy()).all()
         sigma = np.sqrt(np.sum((weights * group.sigma.to_numpy()) ** 2))
         snr = np.sqrt(2 / np.pi) * abs(field) / sigma if sigma > 0 else 0.0
         rows.append(dict(Epoch=group.Epoch.min().strftime("%Y/%j %H:%M:%S.%f"),
@@ -93,7 +135,8 @@ def integrate(args):
                          El_Offset=args.grid_origin[1] + el_cell * args.grid_step[1],
                          Beam_State="on_calibrated", Antenna_m=args.antenna,
                          Grid_Az_arcmin=args.grid_step[0], Grid_El_arcmin=args.grid_step[1],
-                         N_samples=len(group), N_files=group.source.nunique()))
+                         N_samples=len(group), N_files=group.source.nunique(),
+                         Noise_known=bool(noise_known)))
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(output, index=False, float_format="%.15g")
     print(f"保存: {output} ({len(paths)}ファイル、{len(rows)}格子点、Length加重複素平均)")

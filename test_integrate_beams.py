@@ -84,6 +84,54 @@ class IntegrationTest(unittest.TestCase):
             self.run_integration()
         self.assertEqual(Path(self.args.out).read_text(), 'keep')
 
+    def test_unavailable_snr_does_not_discard_field(self):
+        for snr in (0, -1, np.nan, np.inf):
+            with self.subTest(snr=snr):
+                a = self.observation('a.txt', 2, 30, 1, 179)
+                data = pd.read_csv(a)
+                data['SNR'] = snr
+                data.to_csv(a, index=False)
+                self.args.inputs = [a]
+                self.args.overwrite = True
+                row = self.run_integration().iloc[0]
+                self.assertAlmostEqual(row.Amp, .2)
+                self.assertAlmostEqual(row.Phase, 179)
+                self.assertEqual(row.N_samples, 1)
+                self.assertEqual(row.SNR, 0)
+                self.assertFalse(row.Noise_known)
+
+    def test_missing_noise_uses_same_length_peer_before_on_normalization(self):
+        a = self.observation('a.txt', 2, 0, 1, 0)
+        data = pd.read_csv(a)
+        peer = data.iloc[1].copy()
+        peer['Epoch'] = '2026/001 00:00:30.000000'
+        peer['Amp'] = .7  # .2 times the ON reference (3.5)
+        peer['Phase'] = 15
+        peer['SNR'] = 0
+        data = pd.concat([data, peer.to_frame().T], ignore_index=True)
+        data.to_csv(a, index=False)
+        self.args.inputs = [a]
+        row = self.run_integration().iloc[0]
+        self.assertAlmostEqual(row.Amp, .2)
+        self.assertEqual(row.N_samples, 2)
+        self.assertTrue(row.Noise_known)
+        expected_snr = .2 / np.sqrt(((.6 / 100 / 3) ** 2 + (.6 / 100 / 3.5) ** 2) / 4)
+        self.assertAlmostEqual(row.SNR, expected_snr)
+
+    def test_bad_field_reports_column_record_and_value_once(self):
+        a = self.observation('a.txt', 2, 0, 1, 0)
+        data = pd.read_csv(a)
+        data.loc[1, 'Length'] = 0
+        data.loc[1, 'Amp'] = -1
+        data.to_csv(a, index=False)
+        self.args.inputs = [a]
+        with self.assertRaises(ValueError) as caught:
+            self.run_integration()
+        message = str(caught.exception)
+        self.assertEqual(message.count(a), 1)
+        self.assertIn('Length: 1件 (3行目=0', message)
+        self.assertIn('Amp: 1件 (3行目=-1', message)
+
 
 if __name__ == '__main__':
     unittest.main()
