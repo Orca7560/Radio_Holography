@@ -28,9 +28,9 @@
 # パス規則:
 #   SKDファイル: ${OBS_CODE}/${OBS_CODE}${ANTENNA}.skd
 #   PRDファイル: ${OBS_CODE}/${OBS_CODE}${ANTENNA}.prd
-#   出力先:     ${OBS_CODE}/results[_接尾辞]         (--output-suffix)
-#   beamファイル: ${OBS_CODE}/beam[_接尾辞].txt        （最終, --output-suffixと共通）
-#               ${OBS_CODE}/beam[_接尾辞]_search.txt （lag推定用の暫定beam）
+#   出力先:     ${OBS_CODE}/${OBS_CODE}_${ANTENNA}_${SCAN_AXIS}_${MEAS_ELEVATION}deg[_接尾辞]
+#   beamファイル: ${OBS_CODE}/beam_<DOY><観測枝番>[_接尾辞].txt
+#               ${OBS_CODE}/beam_<DOY><観測枝番>[_接尾辞]_search.txt
 #
 set -euo pipefail
 
@@ -45,6 +45,7 @@ PY_HOLOGRAPHY="${SCRIPT_DIR}/Holography.py"
 # ── 既定値 ──
 ANTENNA="32"
 OUTPUT_SUFFIX=""
+MEAS_ELEVATION=""
 CPU=""
 BAND_SPLIT=""
 SCAN_HALF="false"
@@ -97,9 +98,8 @@ usage() {
   --antenna {32,34}           測定アンテナ径 [m]。SKD/PRD選択とホログラフィ解析に使用（既定: 32）
                                -> OBS_CODE/OBS_CODE{ANTENNA}.skd / .prd
                                -> 34ではHolography.pyが入力Phaseを反転して解析
-  --output-suffix NAME        図の出力先を OBS_CODE/results_NAME に、
-                               beamファイル名を beam_NAME.txt / beam_NAME_search.txt
-                               にする（未指定時は results / beam.txt / beam_search.txt）
+  --output-suffix NAME        新しい既定の結果名・beam名に任意の接尾辞を追加
+  --meas-elevation DEG        結果ディレクトリ名に用いる仰角 [deg]（既定: PRDの天体名から決定）
 
 corr_fringe.py 関連:
   --cpu N                     gico3実行時のCPUコア数
@@ -180,6 +180,9 @@ while [[ $# -gt 0 ]]; do
             fi
             ANTENNA="$2"; shift 2 ;;
         --output-suffix) OUTPUT_SUFFIX="$2"; shift 2 ;;
+        --meas-elevation)
+            [[ $# -ge 2 && "$2" != --* ]] || { echo "[ERROR] --meas-elevation には仰角が必要です。" >&2; exit 1; }
+            MEAS_ELEVATION="$2"; shift 2 ;;
         --cpu) CPU="$2"; shift 2 ;;
         --band-split) BAND_SPLIT="$2"; shift 2 ;;
         --on-length)
@@ -254,21 +257,6 @@ fi
 # ── パス構築 ──
 SKD_FILE="${OBS_CODE}/${OBS_CODE}${ANTENNA}.skd"
 PRD_FILE="${OBS_CODE}/${OBS_CODE}${ANTENNA}.prd"
-OUTPUT_DIR="${OBS_CODE}/results${OUTPUT_SUFFIX:+_${OUTPUT_SUFFIX}}"
-
-# beamファイル名: 既定 beam.txt / beam_search.txt。--output-suffixを付けると
-# beam_<suffix>.txt / beam_<suffix>_search.txt になる（複数バージョンを
-# 上書きせず残しておくためのマージン）。
-# --band-split使用時はgroup_up_txt_prd.py側の制約で --output を指定できず
-# beam_<band>.txt 固定になるため、suffixはband-split時には適用されない。
-BEAM_BASENAME="beam${OUTPUT_SUFFIX:+_${OUTPUT_SUFFIX}}"
-if [[ -n "$BAND_SPLIT" ]]; then
-    BEAM_SEARCH_FILE="${OBS_CODE}/beam_${SCAN_BAND}_search.txt"
-    BEAM_FINAL_FILE="${OBS_CODE}/beam_${HOLOGRAPHY_BAND}.txt"
-else
-    BEAM_SEARCH_FILE="${OBS_CODE}/${BEAM_BASENAME}_search.txt"
-    BEAM_FINAL_FILE="${OBS_CODE}/${BEAM_BASENAME}.txt"
-fi
 
 for f in "$SKD_FILE" "$PRD_FILE"; do
     if [[ ! -f "$f" ]]; then
@@ -277,9 +265,45 @@ for f in "$SKD_FILE" "$PRD_FILE"; do
     fi
 done
 
-if [[ "$AFTER_CORR" == "true" && ! -f "$BEAM_SEARCH_FILE" && "$DRY_RUN" != "true" ]]; then
-    echo "[ERROR] --after-corr には $BEAM_SEARCH_FILE が必要です。先に通常モードで一度実行してください。" >&2
+OBS_NAME="$(basename "$OBS_CODE")"
+if [[ ! "$OBS_NAME" =~ ^I[0-9]{2}([0-9]{3})Y([A-Za-z]*)$ ]]; then
+    echo "[ERROR] 観測コードの形式が不正です: $OBS_NAME（例: I26323YA）" >&2
     exit 1
+fi
+BEAM_ID="${BASH_REMATCH[1]}${BASH_REMATCH[2]^^}"
+TARGET_NAME=$(awk '$1 == "*" && toupper($2) == "EXPER" {print $3; exit}' "$PRD_FILE")
+if [[ -z "$TARGET_NAME" ]]; then
+    TARGET_NAME=$(awk '$1 == "$SKED" {in_sked=1; next} in_sked && $1 !~ /^\*/ && NF {print $1; exit}' "$SKD_FILE")
+fi
+if [[ -z "$MEAS_ELEVATION" ]]; then
+    case "${TARGET_NAME^^}" in
+        3C273) MEAS_ELEVATION=57 ;;
+        3C454.3|3C4543) MEAS_ELEVATION=72 ;;
+        J1924|J1924-2914) MEAS_ELEVATION=27 ;;
+        *) echo "[ERROR] 天体 '$TARGET_NAME' の仰角が未登録です。--meas-elevation DEG を指定してください。" >&2; exit 1 ;;
+    esac
+fi
+if [[ ! "$MEAS_ELEVATION" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v el="$MEAS_ELEVATION" 'BEGIN {exit !(el >= 0 && el <= 90)}'; then
+    echo "[ERROR] --meas-elevation は0～90の数値で指定してください。" >&2
+    exit 1
+fi
+OUTPUT_DIR="${OBS_CODE}/${OBS_NAME}_${ANTENNA}_${SCAN_AXIS}_${MEAS_ELEVATION}deg${OUTPUT_SUFFIX:+_${OUTPUT_SUFFIX}}"
+BEAM_BASENAME="beam_${BEAM_ID}${OUTPUT_SUFFIX:+_${OUTPUT_SUFFIX}}"
+BEAM_SEARCH_FILE="${OBS_CODE}/${BEAM_BASENAME}_search.txt"
+BEAM_FINAL_FILE="${OBS_CODE}/${BEAM_BASENAME}.txt"
+
+if [[ "$AFTER_CORR" == "true" && ! -f "$BEAM_SEARCH_FILE" && "$DRY_RUN" != "true" ]]; then
+    if [[ -n "$BAND_SPLIT" ]]; then
+        LEGACY_SEARCH_FILE="${OBS_CODE}/beam_${SCAN_BAND}_search.txt"
+    else
+        LEGACY_SEARCH_FILE="${OBS_CODE}/beam${OUTPUT_SUFFIX:+_${OUTPUT_SUFFIX}}_search.txt"
+    fi
+    if [[ -f "$LEGACY_SEARCH_FILE" ]]; then
+        BEAM_SEARCH_FILE="$LEGACY_SEARCH_FILE"
+    else
+        echo "[ERROR] --after-corr には $BEAM_SEARCH_FILE が必要です。先に通常モードで一度実行してください。" >&2
+        exit 1
+    fi
 fi
 
 # ── 実行ヘルパー ──
@@ -355,6 +379,8 @@ fi
 [[ -n "$CENTER_BLOCK_SIZE" ]] && holography_opts+=(--center-block-size "$CENTER_BLOCK_SIZE")
 
 echo "OBS_CODE     : $OBS_CODE"
+echo "TARGET       : $TARGET_NAME"
+echo "MEAS_ELEVATION: ${MEAS_ELEVATION} deg"
 echo "ANTENNA      : $ANTENNA"
 if [[ "$ANTENNA" == "34" ]]; then
     echo "INPUT_PHASE  : Holography.pyで符号反転（ON点を含む）"
@@ -412,16 +438,8 @@ if [[ "$AFTER_CORR" != "true" ]]; then
     step 4/8 "group_up_txt_prd.py（${BEAM_SEARCH_FILE} 作成）"
     if [[ -n "$BAND_SPLIT" ]]; then
         run python3 "$PY_GROUP_UP" --input "$OBS_CODE" --prd "$PRD_FILE" "${group_up_common_opts[@]}"
-        # band-split時は --output を指定できないため beam_<band>.txt が既定名で
-        # 作られる。lag補正後の同名ファイルに上書きされる前に "_search" 付きで
-        # 退避しておく。
-        if [[ "$DRY_RUN" != "true" ]]; then
-            for f in "${OBS_CODE}"/beam_*.txt; do
-                [[ -e "$f" ]] || continue
-                base="$(basename "$f" .txt)"
-                cp "$f" "${OBS_CODE}/${base}_search.txt"
-            done
-        fi
+        # 指定帯域だけを走査lag推定用の名前で保存する。
+        run cp "${OBS_CODE}/beam_${SCAN_BAND}.txt" "$BEAM_SEARCH_FILE"
     else
         run python3 "$PY_GROUP_UP" --input "$OBS_CODE" --prd "$PRD_FILE" \
             --output "$BEAM_SEARCH_FILE" "${group_up_common_opts[@]}"
@@ -464,6 +482,7 @@ run python3 "$PY_CORR_FRINGE" "$OBS_CODE" --only-frinZ \
 step "$STEP7_LABEL" "group_up_txt_prd.py（${BEAM_FINAL_FILE} 作成）"
 if [[ -n "$BAND_SPLIT" ]]; then
     run python3 "$PY_GROUP_UP" --input "$OBS_CODE" --prd "$PRD_FILE" "${group_up_common_opts[@]}"
+    run cp "${OBS_CODE}/beam_${HOLOGRAPHY_BAND}.txt" "$BEAM_FINAL_FILE"
 else
     run python3 "$PY_GROUP_UP" --input "$OBS_CODE" --prd "$PRD_FILE" \
         --output "$BEAM_FINAL_FILE" "${group_up_common_opts[@]}"
@@ -482,6 +501,7 @@ echo
 echo "--- 全ステップが完了しました ---"
 echo "最終beam    : $BEAM_FINAL_FILE"
 echo "出力ディレクトリ: $OUTPUT_DIR"
+
 
 
 
