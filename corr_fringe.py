@@ -361,6 +361,27 @@ def is_on_scan(scan, on_length=DEFAULT_ON_LENGTH):
     return math.isclose(xml_scan_duration(scan), on_length, rel_tol=0.0, abs_tol=1e-9)
 
 
+def scan_padding_seconds(scan):
+    """Recognize legacy 41 s and symmetric 43 s correlation windows."""
+    duration = xml_scan_duration(scan)
+    for padding in (0, 1):
+        if math.isclose(duration, scan_time + 2 * padding, abs_tol=1e-9):
+            return padding
+    raise ValueError(f"未対応のoffset XML期間: {duration:g} s（41 sまたは43 sが必要です）。")
+
+
+def offset_tasks_for_scan(scan, offset_scan_time, offset_step_time=None,
+                          scan_half=False, lag_ms=0.0):
+    """Keep the nominal 41 s grid, using the extra second only for lag."""
+    padding = scan_padding_seconds(scan)
+    tasks = make_offset_tasks(offset_scan_time, offset_step_time, scan_half)
+    if padding and abs(lag_ms) > padding * 1000:
+        raise ValueError(f"ラグ {lag_ms:+g} ms が相関用の前後{padding}秒を超えています。全点を保持できません。")
+    for task in tasks:
+        task['skip'] += padding * output
+    return apply_scan_lag(tasks, lag_ms, xml_scan_duration(scan) * output)
+
+
 def make_offset_tasks(offset_scan_time, offset_step_time=None, scan_half=False):
     """Build integration windows in output-sample units; retain legacy defaults."""
     length = float(offset_scan_time * output)
@@ -460,10 +481,11 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                 start = datetime.strptime(scan.find('epoch').text.strip(), '%Y/%j %H:%M:%S')
                 start += timedelta(seconds=float(scan.find('skip').text))
                 if not is_on_scan(scan, on_length):
-                    directions[start] = infer_scan_direction(start, scan_positions, scan_axis)
+                    nominal_start = start + timedelta(seconds=scan_padding_seconds(scan))
+                    directions[start] = infer_scan_direction(nominal_start, scan_positions, scan_axis)
                     # Validate shifted windows before opening any output files.
-                    preview_tasks = make_offset_tasks(offset_scan_time, offset_step_time, scan_half=scan_half)
-                    apply_scan_lag(preview_tasks, direction_lags[directions[start]], float(scan_time * output))
+                    offset_tasks_for_scan(scan, offset_scan_time, offset_step_time,
+                                          scan_half, direction_lags[directions[start]])
         for direction, lag in direction_lags.items():
             if lag != 0 and direction not in directions.values():
                 raise ValueError(f"{scan_axis.title()}方向 {direction:+d} のスキャンがありません。SKDを確認してください。")
@@ -558,22 +580,20 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                         
                     elif is_offset:
                         print(f"  [INFO] offsetスキャンとして処理します: {timestamp_for_file} (XML length-skip={xml_scan_duration(scan):g} s)")
-                        tasks = make_offset_tasks(
-                            offset_scan_time, offset_step_time,
-                            scan_half=(processor == "frinZ" and scan_half))
+                        tasks = offset_tasks_for_scan(
+                            scan, offset_scan_time, offset_step_time,
+                            scan_half=(processor == "frinZ" and scan_half),
+                            lag_ms=direction_lags[directions[scan_start_datetime]] if apply_lags else 0.0)
 
                     if is_offset and apply_lags:
                         direction = directions[scan_start_datetime]
                         lag_ms = direction_lags[direction]
                         if lag_ms != 0:
-                            original_task_count = len(tasks)
-                            tasks = apply_scan_lag(tasks, lag_ms, float(scan_time * output))
-                            skipped_count = original_task_count - len(tasks)
                             first = tasks[0]
                             print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} を {lag_ms:+g} ms補正: "
                                   f"先頭 --length {first['length']:g} --skip {first['skip']:g} "
                                   f"({first['length'] / output * 1000:g} ms積分)、"
-                                  f"範囲外 {skipped_count} 区間をスキップ。Epochは実積分開始時刻，座標用の補正前窓は別途保持。")
+                                  f"{len(tasks)} 区間を処理。Epochは実積分開始時刻，座標用の補正前窓は別途保持。")
                         else:
                             print(f"  [INFO] {scan_axis.title()}方向 {direction:+d} のラグは0 msです。")
 
@@ -859,5 +879,6 @@ if __name__ == "__main__":
     except (ValueError, ET.ParseError, AttributeError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
 
