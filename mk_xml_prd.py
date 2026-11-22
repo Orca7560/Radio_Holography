@@ -85,11 +85,8 @@ def generate_prd_skd(obs_start_time, is_dry_run=False, output_dir=".", az_interv
     # ★スキャンにかかる時間を厳密に41.0秒に設定
     row_scan_time_sec = 41.0 
     
-    # ★41秒の間に生成されるステップ数を計算 (例: 41.0 / 0.5 + 1 = 83点)
-    num_steps_per_row = int(row_scan_time_sec / az_interval_sec)
-    if half_edge:
-        # 両端を半分の積分時間にして、列全体の41秒を保つ。
-        num_steps_per_row += 1
+    # ±60′を1.5′間隔で両端を含めて走査するので81点。
+    num_steps_per_row = int(total_scan_width / spatial_step) + 1
     
     cur = obs_start_time
     
@@ -223,26 +220,16 @@ def generate_prd_skd(obs_start_time, is_dry_run=False, output_dir=".", az_interv
         scan_step_fixed = 1.5
         if r == num_rows // 2:
             # 中央の列の (Az, El)=(0, 0) 測定の中心時刻。
-            center_seconds = scan_limit / 3.0 if half_edge else (scan_limit / scan_step_fixed) * az_interval_sec
+            center_seconds = 0.5 + scan_limit / 3.0
             center_time = cur + timedelta(seconds=center_seconds)
 
         for i in range(num_steps_per_row):
-            if half_edge:
-                edge_dur = az_interval_sec / 2.0
-                offset = 0.0 if i == 0 else edge_dur + (i - 1) * az_interval_sec
-                dur_i = edge_dur if i in (0, num_steps_per_row - 1) else az_interval_sec
-            else:
-                offset = i * az_interval_sec
-                dur_i = integ_time
+            dur_i = az_interval_sec / 2.0 if half_edge and i in (0, num_steps_per_row - 1) else integ_time
+            offset = 0.5 + i * az_interval_sec - dur_i / 2.0
             t_i = cur + timedelta(seconds=offset)
             direction = 1 if (end_scan > start_scan) else -1
             
-            if half_edge:
-                # 座標は積分の中心時刻における3'/秒の指向位置。
-                # 40秒で反対側の端に達し、残り1秒は端に留まる。
-                scan_i = start_scan + direction * 3.0 * (offset + dur_i / 2.0)
-            else:
-                scan_i = start_scan + (direction * scan_step_fixed * i)
+            scan_i = start_scan + direction * scan_step_fixed * i
             
             # 浮動小数点の丸め誤差対策で最大幅を超えないように制限
             scan_i = min(scan_i, end_scan) if direction == 1 else max(scan_i, end_scan)
@@ -349,7 +336,8 @@ def generate_skd_from_prd(prd_filepath, skd_filepath, output_filepath, scan_axis
             p1, p2, dt = scans[index]
             if midpoint >= p2[0]:
                 raise ValueError(f'SKDの走査点がPRD区間外です: {fields[1]}')
-            ratio = (midpoint - p1[0]).total_seconds() / dt
+            # Nominal raster center times are 0.5 ... 40.5 s in the 41 s leg.
+            ratio = ((midpoint - p1[0]).total_seconds() - 0.5) / (dt - 1.0)
             az = p1[1] + (p2[1] - p1[1]) * ratio
             el = p1[2] + (p2[2] - p1[2]) * ratio
             match = re.match(r'^(\s*\S+\s+\S+\s+\S+\s+)(\S+)(\s+)(\S+)(.*)$', line)
@@ -506,7 +494,7 @@ def reserve_observation_directory(obs_start_time, output_root):
         f"{base_code}A〜{base_code}Z はすべて使用済みです。保存先を変更してください。")
 
 
-def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root='.', half_edge=False):
+def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root='.', half_edge=False, start_time=None):
     """0.5秒間隔のPRD/SKD/XMLを生成し、出力先を返す。"""
     global target_name, target_ra_str, target_dec_str, ant_meas, ant_ref
     datetime.strptime(date_str, '%Y-%m-%d')
@@ -522,7 +510,7 @@ def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root
     dummy_epoch = datetime(2026, 1, 1)
     _, center_offset = generate_prd_skd(dummy_epoch, is_dry_run=True, az_interval_sec=0.5, scan_axis=scan_axis, half_edge=half_edge)
     # PRDは秒単位。開始時刻を整数秒にして中央測定を南中に最も近づける。
-    obs_start_time = (transit_time_exact - center_offset + timedelta(microseconds=500000)).replace(microsecond=0)
+    obs_start_time = (transit_time_exact - center_offset + timedelta(microseconds=500000)).replace(microsecond=0) if start_time is None else start_time
     center_scan_time = obs_start_time + center_offset
     obs_code, output_dir = reserve_observation_directory(obs_start_time, output_root)
 
@@ -654,10 +642,29 @@ if __name__ == '__main__':
         parser.add_argument('--scan-axis', choices=('az', 'el'), default='az')
         parser.add_argument('--half-edge', action='store_true', help='各走査列の最初と最後を0.25秒積分にする')
         parser.add_argument('--output-dir', default='.', help='保存先の親フォルダー')
+        parser.add_argument('--start-time', type=lambda value: datetime.strptime(value, '%Y-%m-%d %H:%M:%S'), help='観測開始UTCを明示指定（例: 2026-07-03 08:21:00）')
+        parser.add_argument('--from-prd', help='既存PRDの時刻・座標を維持してXMLのみを再生成する')
         args = parser.parse_args()
         if args.list_targets:
             for name, (ra, dec) in TARGETS.items():
                 print(f'{name:<12} RA {ra}  Dec {dec}')
+            parser.exit()
+        if args.from_prd:
+            filename = os.path.basename(args.from_prd)
+            match = re.fullmatch(r'.+(32|34)\.prd', filename)
+            if not match:
+                parser.error('--from-prd は観測コード32.prd または観測コード34.prd を指定してください')
+            ant_meas = int(match.group(1))
+            ant_ref = 34 if ant_meas == 32 else 32
+            with open(args.from_prd, encoding='utf-8-sig') as fp:
+                source = next((line.split()[2] for line in fp if line.startswith('* EXPER ') and len(line.split()) >= 3), None)
+            if not source:
+                parser.error('PRDのEXPER行に天体名がありません')
+            target_name = source
+            if not os.path.isdir(args.output_dir):
+                parser.error('保存先フォルダーが存在しません')
+            parse_prd_and_generate_xml(args.from_prd, args.output_dir, scan_axis=args.scan_axis)
+            print(f'PRDの時刻を維持してXMLを生成しました: {args.output_dir}')
             parser.exit()
         if not args.date:
             parser.error('--date を指定してください')
@@ -667,9 +674,10 @@ if __name__ == '__main__':
         if not os.path.isdir(args.output_dir):
             parser.error(f'保存先フォルダーが存在しません: {args.output_dir}')
         output_dir, transit, start, center = generate_schedule(
-            args.date, selected, args.antenna, args.scan_axis, args.output_dir, args.half_edge)
+            args.date, selected, args.antenna, args.scan_axis, args.output_dir, args.half_edge, args.start_time)
         print(f'天体: {selected}  測定アンテナ: {args.antenna} m  走査方向: {args.scan_axis.upper()}')
         print(f'南中: {format_utc_millis(transit)} UTC')
         print(f'中央 (Az=0, El=0): {format_utc_millis(center)} UTC')
         print(f'開始: {start:%Y-%m-%d %H:%M:%S} UTC')
         print(f'出力先: {output_dir}')
+
