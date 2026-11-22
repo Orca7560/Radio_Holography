@@ -251,6 +251,17 @@ def rows_from_prd(measurements: pd.DataFrame, prd: pd.DataFrame,
     primary, cross = (vx, vy) if scan_axis == "az" else (vy, vx)
     direction = np.where((np.abs(primary) > 1e-5) & (np.abs(cross) < 0.2),
                          np.sign(primary), 0).astype(int)
+    # A beam produced by group_up_txt_prd records the same within-leg rate
+    # used to assign its nominal coordinates. Prefer that rate for lag fitting
+    # when it agrees with the PRD direction (e.g. 3 rather than 120/41).
+    rate_column = f"{scan_axis.title()}_Rate_arcmin_s"
+    if speed is None and rate_column in df:
+        recorded = pd.to_numeric(df[rate_column], errors="coerce").to_numpy()
+        use_recorded = (direction != 0) & np.isfinite(recorded) & (np.sign(recorded) == direction)
+        if scan_axis == "az":
+            vx = np.where(use_recorded, recorded, vx)
+        else:
+            vy = np.where(use_recorded, recorded, vy)
     if speed is not None:
         vx = direction * speed if scan_axis == "az" else np.zeros(len(df))
         vy = direction * speed if scan_axis == "el" else np.zeros(len(df))
@@ -748,3 +759,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
