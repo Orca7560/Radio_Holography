@@ -508,9 +508,11 @@ def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root
 
     transit_time_exact = get_transit_time(date_str, target_ra_str, target_dec_str)
     dummy_epoch = datetime(2026, 1, 1)
-    _, center_offset = generate_prd_skd(dummy_epoch, is_dry_run=True, az_interval_sec=0.5, scan_axis=scan_axis, half_edge=half_edge)
-    # PRDは秒単位。開始時刻を整数秒にして中央測定を南中に最も近づける。
-    obs_start_time = (transit_time_exact - center_offset + timedelta(microseconds=500000)).replace(microsecond=0) if start_time is None else start_time
+    total_seconds, center_offset = generate_prd_skd(dummy_epoch, is_dry_run=True, az_interval_sec=0.5, scan_axis=scan_axis, half_edge=half_edge)
+    # 従来と同じく観測全体（ON点・移動を含む）の中間時刻を南中に合わせる。
+    # 中央走査の原点通過時刻は表示用で、開始時刻の決定には使用しない。
+    midpoint_offset = timedelta(seconds=total_seconds / 2)
+    obs_start_time = (transit_time_exact - midpoint_offset + timedelta(microseconds=500000)).replace(microsecond=0) if start_time is None else start_time
     center_scan_time = obs_start_time + center_offset
     obs_code, output_dir = reserve_observation_directory(obs_start_time, output_root)
 
