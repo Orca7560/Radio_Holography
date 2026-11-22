@@ -372,14 +372,36 @@ def scan_padding_seconds(scan):
 
 def offset_tasks_for_scan(scan, offset_scan_time, offset_step_time=None,
                           scan_half=False, lag_ms=0.0):
-    """Keep the nominal 41 s grid, using the extra second only for lag."""
+    """Use a centered 40 s traverse with 0.5 s margins to sample both endpoints."""
     padding = scan_padding_seconds(scan)
-    tasks = make_offset_tasks(offset_scan_time, offset_step_time, scan_half)
+    if padding:
+        step = offset_scan_time if offset_step_time is None else offset_step_time
+        if not 0 < step <= offset_scan_time <= 1.0:
+            raise ValueError("43秒XMLでは積分時間は1秒以下、開始刻みは積分時間以下にしてください。")
+        intervals = round(40 / step)
+        if not math.isclose(intervals * step, 40, abs_tol=1e-8):
+            raise ValueError("43秒XMLでは積分開始刻みが40秒を割り切る必要があります。")
+        tasks = []
+        for i in range(intervals + 1):
+            duration = offset_scan_time / 2 if scan_half and i in (0, intervals) else offset_scan_time
+            # Physical target grid: -60 to +60 at 3 arcmin/s, centered in 41 s.
+            start = 0.5 + i * step - duration / 2
+            skip_samples, length_samples = start * output, duration * output
+            if not (math.isclose(skip_samples, round(skip_samples), abs_tol=1e-7) and
+                    math.isclose(length_samples, round(length_samples), abs_tol=1e-7)):
+                raise ValueError("43秒XMLの積分窓は相関出力の時間分解能に一致させてください。")
+            tasks.append({'skip': float(round(skip_samples)), 'length': float(round(length_samples))})
+    else:
+        tasks = make_offset_tasks(offset_scan_time, offset_step_time, scan_half)
     if padding and abs(lag_ms) > padding * 1000:
         raise ValueError(f"ラグ {lag_ms:+g} ms が相関用の前後{padding}秒を超えています。全点を保持できません。")
     for task in tasks:
         task['skip'] += padding * output
-    return apply_scan_lag(tasks, lag_ms, xml_scan_duration(scan) * output)
+    adjusted = apply_scan_lag(tasks, lag_ms, xml_scan_duration(scan) * output)
+    if padding:
+        for task in adjusted:
+            task['centered_raster'] = True
+    return adjusted
 
 
 def make_offset_tasks(offset_scan_time, offset_step_time=None, scan_half=False):
@@ -633,8 +655,9 @@ def run_fringe_steps(step_xml_files, processor="fringe", use_freq_format=False,
                                 nominal_length = task.get('nominal_length', float_length)
                                 coordinate_epoch = scan_start_datetime + timedelta(seconds=nominal_skip / output)
                                 # Keep the nominal coordinate window independently of actual data time.
-                                if apply_lags:
-                                    f.write(f"# COORDINATE_WINDOW {coordinate_epoch.strftime('%Y/%j %H:%M:%S.%f')}|{nominal_length / output:.6f}\n")
+                                if apply_lags or task.get('centered_raster'):
+                                    mode = '|centered-raster' if task.get('centered_raster') else ''
+                                    f.write(f"# COORDINATE_WINDOW {coordinate_epoch.strftime('%Y/%j %H:%M:%S.%f')}|{nominal_length / output:.6f}{mode}\n")
                                 output_time = scan_start_datetime + timedelta(seconds=int_skip / output)
                                 fringe_data['length'] = int_length / output
                                 # YYYY/DDD HH:MM:SS.ss 形式に整形
@@ -879,6 +902,7 @@ if __name__ == "__main__":
     except (ValueError, ET.ParseError, AttributeError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(1)
+
 
 
 

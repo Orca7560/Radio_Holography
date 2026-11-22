@@ -123,7 +123,7 @@ def parse_prd_positions(prd_filepath):
 
 
 def prd_offset_at(prd_records, prd_times, epoch, integration_length_s, scan_lag_s,
-                  az_drive_speed=3.0, scan_axis="az", el_drive_speed=None):
+                  az_drive_speed=3.0, scan_axis="az", el_drive_speed=None, centered_raster=False):
     """Return midpoint pointing and scan-lag-corrected pointing from PRD.
 
     Epoch is the start of the fringe integration.  Since a correlation value
@@ -147,6 +147,17 @@ def prd_offset_at(prd_records, prd_times, epoch, integration_length_s, scan_lag_
     fraction = (sample_time - t0).total_seconds() / duration_s
     az_rate = (az1 - az0) / duration_s
     el_rate = (el1 - el0) / duration_s
+    if centered_raster:
+        # The 41 s PRD leg contains a 40 s nominal traverse centered within it.
+        # Match corr_fringe's native sample centers (0.5 ... 40.5 s).
+        primary_delta, cross_delta = (az1-az0, el1-el0) if scan_axis == 'az' else (el1-el0, az1-az0)
+        if not (np.isclose(duration_s, 41) and np.isclose(abs(primary_delta), 120) and np.isclose(cross_delta, 0)):
+            raise ValueError('centered-rasterの座標窓が41秒・120分角のPRD走査列に対応していません。')
+        elapsed = (sample_time - t0).total_seconds() - 0.5
+        if not -1e-6 <= elapsed <= 40 + 1e-6:
+            raise ValueError('centered-rasterの座標窓が走査範囲外です。')
+        az_rate, el_rate = (az1-az0)/40, (el1-el0)/40
+        return az0 + az_rate*elapsed, el0 + el_rate*elapsed, az_rate, el_rate
     # 本走査（El一定）では、PRDの区間始点からの経過時間と指定駆動速度で
     # 位置を決める。向きだけはPRDのAz変化から判定し、折返しの同時Az/El移動は
     # PRD座標をそのまま線形補間する。
@@ -226,8 +237,9 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                     if line.startswith('# COORDINATE_WINDOW '):
                         if scan_lag_ms != 0:
                             raise ValueError('corr_fringeの座標固定データには--scan-lag-ms 0を指定してください（二重補正を防止）。')
-                        coordinate_epoch, coordinate_length = line[len('# COORDINATE_WINDOW '):].strip().split('|')
-                        coordinate_window = (coordinate_epoch, float(coordinate_length))
+                        fields = line[len('# COORDINATE_WINDOW '):].strip().split('|')
+                        coordinate_epoch, coordinate_length = fields[:2]
+                        coordinate_window = (coordinate_epoch, float(coordinate_length), len(fields) == 3 and fields[2] == 'centered-raster')
                         continue
                     if line.startswith('#'):
                         continue
@@ -273,7 +285,7 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                             delay = float(parts[delay_index])
                             output_parts.append(f"{delay:.2f}")
 
-                        coord_epoch, coord_length = window if window is not None else (epoch, integration_length_s)
+                        coord_epoch, coord_length, centered_raster = window if window is not None else (epoch, integration_length_s, False)
                         if prd_data:
                             try:
                                 epoch_dt = datetime.strptime(coord_epoch, '%Y/%j %H:%M:%S.%f')
@@ -282,7 +294,7 @@ def merge_fringe_results(input_root=".", output_file=None, add_delay=False, skd_
                             az, el, az_rate, el_rate = prd_offset_at(
                                 prd_data, prd_times, epoch_dt, coord_length, scan_lag_ms / 1000.0,
                                 az_drive_speed=az_drive_speed, scan_axis=scan_axis,
-                                el_drive_speed=el_drive_speed
+                                el_drive_speed=el_drive_speed, centered_raster=centered_raster
                             )
                             output_parts.extend([
                                 f"{az:.6f}", f"{el:.6f}",
@@ -378,4 +390,5 @@ if __name__ == "__main__":
                              add_delay=args.add_delay, scan_lag_ms=args.scan_lag_ms,
                              az_drive_speed=args.az_drive_speed, is_maser=args.maser,
                              scan_axis=args.scan_axis, el_drive_speed=args.el_drive_speed)
+
 
