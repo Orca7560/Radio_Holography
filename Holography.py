@@ -502,16 +502,19 @@ def format_field_slice_figure(fig, axes, db_min):
                         hspace=0.10, wspace=0.32)
 
 
-def draw_aperture_radius_lines(ax, diameter, fixed_coordinate=0.0):
+def draw_aperture_radius_lines(ax, diameter, fixed_coordinate=0.0, *, vertical_profile=False):
     """Mark the antenna radius and the 32 m design illumination boundary."""
+    draw_line = ax.axhline if vertical_profile else ax.axvline
     for position in (-diameter / 2, diameter / 2):
-        ax.axvline(position, color="black", linestyle="--", linewidth=1)
+        draw_line(position, color="black", linestyle="-", linewidth=1.6,
+                  zorder=2)
     # The 0.9R uniform-illumination design is documented for the 32 m dish.
     design_radius = 0.9 * diameter / 2
     if diameter == 32 and abs(fixed_coordinate) < design_radius:
         transition = np.sqrt(design_radius**2 - fixed_coordinate**2)
         for position in (-transition, transition):
-            ax.axvline(position, color="black", linestyle=":", linewidth=1)
+            draw_line(position, color="black", linestyle=(0, (4, 3)), linewidth=1.4,
+                      zorder=2)
 
 
 def shade_aperture_slice_center(ax, fixed_coordinate, center_size=3.0):
@@ -650,7 +653,7 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
                            interpolation="nearest", aspect="equal")
         fig.colorbar(im, cax=ax_color, label=label)
         ax_map.add_patch(plt.Circle((0, 0), diameter/2, fill=False,
-                                   color="black", linestyle="--", linewidth=1.2))
+                                   color="black", linestyle="-", linewidth=1.2))
         ax_map.axvline(x_axis[ix], color="black", linestyle=":", linewidth=0.8)
         ax_map.axhline(y_axis[iy], color="black", linestyle=":", linewidth=0.8)
         ax_map.set(xlim=(-limit, limit), ylim=(-limit, limit),
@@ -667,12 +670,7 @@ def save_aperture_map_slices(x_axis, y_axis, field, phase_degrees,
         # for the y profile so all its labels remain upright.
         draw_aperture_radius_lines(ax_x, diameter, y_axis[iy])
         shade_aperture_slice_center(ax_x, y_axis[iy])
-        for position in (-diameter/2, diameter/2):
-            ax_y.axhline(position, color="black", linestyle="--", linewidth=1)
-        if diameter == 32 and abs(x_axis[ix]) < 0.9 * diameter/2:
-            edge = np.sqrt((0.9 * diameter/2)**2 - x_axis[ix]**2)
-            for position in (-edge, edge):
-                ax_y.axhline(position, color="black", linestyle=":", linewidth=1)
+        draw_aperture_radius_lines(ax_y, diameter, x_axis[ix], vertical_profile=True)
         if abs(x_axis[ix]) <= 1.5:
             ax_y.axhspan(-1.5, 1.5, color="0.85", zorder=0)
         value_step = 10 if cmap == "inferno" else 100
