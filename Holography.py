@@ -503,14 +503,14 @@ def format_field_slice_figure(fig, axes, db_min):
 
 
 def draw_aperture_radius_lines(ax, diameter, fixed_coordinate=0.0, *, vertical_profile=False):
-    """Mark the antenna radius and the 32 m design illumination boundary."""
+    """Mark the antenna radius and the design illumination boundary."""
     draw_line = ax.axhline if vertical_profile else ax.axvline
     for position in (-diameter / 2, diameter / 2):
         draw_line(position, color="black", linestyle="-", linewidth=1.6,
                   zorder=2)
-    # The 0.9R uniform-illumination design is documented for the 32 m dish.
+    # Mark the intersection of the 0.9R illumination boundary with the slice.
     design_radius = 0.9 * diameter / 2
-    if diameter == 32 and abs(fixed_coordinate) < design_radius:
+    if abs(fixed_coordinate) < design_radius:
         transition = np.sqrt(design_radius**2 - fixed_coordinate**2)
         for position in (-transition, transition):
             draw_line(position, color="black", linestyle=(0, (4, 3)), linewidth=1.4,
