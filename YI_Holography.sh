@@ -77,7 +77,11 @@ POLAR="false"
 EXCLUDE_CENTER_CROSSINGS="false"
 HOLOGRAPHY_ON_OPTS=()
 HOLOGRAPHY_MC_OPTS=()
-NO_SLICE="false"
+SLICE_EXPLICIT="false"
+SLICE_BEAM="true"
+SLICE_APERTURE="true"
+SLICE_RANGE=""
+HOLOGRAPHY_PLOT_OPTS=()
 DB_MIN=""
 ZOOM_SIZE=""
 CENTER_BLOCK_SIZE=""
@@ -142,8 +146,13 @@ scanning_effect.py 関連:
 
 Holography.py 関連:
   --polar                      開口面の極座標表示を追加する
+  --slice-beam                  ビーム断面を出力する（--beam-slice も可）
+  --slice-aperture              開口面断面を出力する
+  --slice-range M               開口面断面の表示範囲 ±M [m]
+  --slice-aperture-amp          開口面振幅断面を追加出力する
+  --beam                        中央ビーム断面を出力する
   --no-slice                    ビーム/開口面のスライス出力を両方OFFにする
-                               （既定は --slice-beam --slice-aperture 相当で両方ON）
+                               （断面指定がなければ既定で両方ON）
   --db-min DB                    dBスケールの下限
   --zoom-size ARCMIN              ビームパターンのズーム幅[arcmin]
   --center-block-size M           副鏡ブロッキングとして除外する正方形の一辺[m]
@@ -222,7 +231,28 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "[ERROR] $1 には整数が必要です。" >&2; exit 1; }
             HOLOGRAPHY_MC_OPTS+=("$1" "$2"); shift 2 ;;
         --polar) POLAR="true"; shift ;;
-        --no-slice) NO_SLICE="true"; shift ;;
+        --slice-beam|--beam-slice|--slice-aperture)
+            if [[ "$SLICE_EXPLICIT" == "false" ]]; then
+                SLICE_BEAM="false"
+                SLICE_APERTURE="false"
+                SLICE_EXPLICIT="true"
+            fi
+            if [[ "$1" == "--slice-aperture" ]]; then
+                SLICE_APERTURE="true"
+            else
+                SLICE_BEAM="true"
+            fi
+            shift ;;
+        --no-slice)
+            SLICE_EXPLICIT="true"
+            SLICE_BEAM="false"
+            SLICE_APERTURE="false"
+            shift ;;
+        --slice-range)
+            [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "[ERROR] --slice-range には値が必要です。" >&2; exit 1; }
+            SLICE_RANGE="$2"; shift 2 ;;
+        --slice-aperture-amp|--beam)
+            HOLOGRAPHY_PLOT_OPTS+=("$1"); shift ;;
         --db-min) DB_MIN="$2"; shift 2 ;;
         --zoom-size) ZOOM_SIZE="$2"; shift 2 ;;
         --center-block-size) CENTER_BLOCK_SIZE="$2"; shift 2 ;;
@@ -356,7 +386,7 @@ scanning_opts+=(--lag-step-ms "$LAG_STEP_MS")
 [[ -n "$AIRY_RADIUS_ARCMIN" ]] && scanning_opts+=(--airy-radius-arcmin "$AIRY_RADIUS_ARCMIN")
 [[ "$BIDIRECTIONAL_LAGS" == "true" ]] && scanning_opts+=(--bidirectional-lags)
 
-# スライス出力は既定でON。--no-sliceが指定されたときだけ両方OFFにする。
+# スライス出力は既定で両方ON。明示指定があれば選択された断面のみ出力する。
 holography_opts=()
 holography_opts+=(--antenna "$ANTENNA")
 # Bash 4.3以前のset -uでは、初期化済みでも空配列の[@]展開が失敗する。
@@ -371,8 +401,11 @@ fi
 [[ "$EXCLUDE_CENTER_CROSSINGS" == "true" ]] && holography_opts+=(--exclude-center-crossings)
 holography_opts+=(--scan-axis "$SCAN_AXIS")
 [[ "$POLAR" == "true" ]] && holography_opts+=(--polar)
-if [[ "$NO_SLICE" != "true" ]]; then
-    holography_opts+=(--slice-beam --slice-aperture)
+[[ "$SLICE_BEAM" == "true" ]] && holography_opts+=(--slice-beam)
+[[ "$SLICE_APERTURE" == "true" ]] && holography_opts+=(--slice-aperture)
+[[ -n "$SLICE_RANGE" ]] && holography_opts+=(--slice-range "$SLICE_RANGE")
+if [[ -n ${HOLOGRAPHY_PLOT_OPTS[0]+set} ]]; then
+    holography_opts+=("${HOLOGRAPHY_PLOT_OPTS[@]}")
 fi
 [[ -n "$DB_MIN" ]] && holography_opts+=(--db-min "$DB_MIN")
 [[ -n "$ZOOM_SIZE" ]] && holography_opts+=(--zoom-size "$ZOOM_SIZE")
