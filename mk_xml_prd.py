@@ -5,7 +5,7 @@ import re
 from bisect import bisect_right
 import numpy as np
 from datetime import datetime, timedelta
-from astropy.coordinates import EarthLocation, SkyCoord
+from astropy.coordinates import EarthLocation, SkyCoord, TETE
 from astropy.time import Time
 import astropy.units as u
 
@@ -36,35 +36,41 @@ ant_ref = 34
 # ==========================================
 # 1. Astropy による南中時刻精密計算
 # ==========================================
-def get_transit_time(date_str, ra_str, dec_str):
-    yamaguchi_32m = EarthLocation.from_geocentric(
-        x=-3502544.5870 * u.m,
-        y=+3950966.2350 * u.m,
-        z=+3566381.1920 * u.m
+# 地心直交座標 [m]。相関用XMLと南中時刻計算で共通の測地位置を使用する。
+STATION_POSITIONS = {
+    32: (-3502544.587, +3950966.235, +3566381.192),
+    34: (-3502567.576, +3950885.734, +3566449.115),
+}
+
+
+def get_transit_time(date_str, ra_str, dec_str, antenna=32):
+    """測定アンテナの位置で天体の視時角が0となるUTC時刻を求める。"""
+    location = EarthLocation.from_geocentric(
+        *STATION_POSITIONS[antenna], unit=u.m
     )
     target = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg), frame='icrs')
-    
-    # 観測日の0時(UTC)時点からの初期推定
-    t = Time(f"{date_str} 00:00:00", scale='utc')
-    lst_0h = t.sidereal_time('apparent', longitude=yamaguchi_32m.lon)
-    ra_diff = (target.ra - lst_0h).wrap_at(24 * u.hour)
-    t = t + ra_diff.hour * 0.9972695663 * u.hour
-    
-    # 反復計算(ニュートン法)による精密化：時角(Hour Angle)が厳密に0になる時刻を探索
+    midnight = Time(f"{date_str} 00:00:00", scale='utc')
+
+    # 視恒星時と同じ基準の視赤経（真赤道・真春分点）を使う。
+    apparent_ra = target.transform_to(TETE(obstime=midnight, location=location)).ra
+    lst = midnight.sidereal_time('apparent', longitude=location.lon)
+    ra_diff = (apparent_ra - lst).wrap_at(24 * u.hourangle)
+    sidereal_rate = 0.9972695663
+    t = midnight + ra_diff.hour * sidereal_rate * u.hour
+
+    # 観測日時の視赤経を逐次更新し、視時角0まで反復する。
     for _ in range(10):
-        lst = t.sidereal_time('apparent', longitude=yamaguchi_32m.lon)
-        ha_deg = (target.ra - lst).deg
-        # 角度差を -180 ~ +180度 に収める
-        ha_deg = (ha_deg + 180) % 360 - 180
-        ha_hour = ha_deg / 15.0
-        
-        # 時角のズレが十分に小さくなれば（約0.3ミリ秒以下）完了
-        if abs(ha_hour) < 1e-7:
-            break
-            
-        t = t + ha_hour * 0.9972695663 * u.hour
-        
-    return t.to_datetime()
+        apparent_ra = target.transform_to(TETE(obstime=t, location=location)).ra
+        lst = t.sidereal_time('apparent', longitude=location.lon)
+        ra_diff = (apparent_ra - lst).wrap_at(180 * u.deg)
+
+        if abs(ra_diff.hour) < 1e-7:
+            return t.to_datetime()
+
+        t = t + ra_diff.hour * sidereal_rate * u.hour
+
+    raise RuntimeError("南中時刻の計算が収束しませんでした。")
+
 
 # ==========================================
 # 2. PRD / SKD ファイル生成 (シミュレーション対応)
@@ -441,8 +447,8 @@ def parse_prd_and_generate_xml(prd_filepath, output_dir, suffix="", scan_axis="a
 <terminal name='ADS1000'><speed>1024000000</speed><channel> 1</channel><bit>2</bit><level>-1.5,+0.5,-0.5,+1.5</level></terminal>
 <terminal name='ADS3000'><speed>1024000000</speed><channel>1</channel><bit>2</bit><level>-1.5,-0.5,+0.5,+1.5</level></terminal>  
 <terminal name='ADS3000_OCT'><speed>1024000000</speed><channel>1</channel><bit>2</bit><level>-1.5,+0.5,-0.5,+1.5</level></terminal>
-<station key='K'><name>YAMAGU32</name><pos-x>-3502544.587</pos-x><pos-y>+3950966.235</pos-y><pos-z>+3566381.192</pos-z><terminal>ADS3000</terminal></station>
-<station key='L'><name>YAMAGU34</name><pos-x>-3502567.576</pos-x><pos-y>+3950885.734</pos-y><pos-z>+3566449.115</pos-z><terminal>ADS3000</terminal></station>
+<station key='K'><name>YAMAGU32</name><pos-x>{STATION_POSITIONS[32][0]:+.3f}</pos-x><pos-y>{STATION_POSITIONS[32][1]:+.3f}</pos-y><pos-z>{STATION_POSITIONS[32][2]:+.3f}</pos-z><terminal>ADS3000</terminal></station>
+<station key='L'><name>YAMAGU34</name><pos-x>{STATION_POSITIONS[34][0]:+.3f}</pos-x><pos-y>{STATION_POSITIONS[34][1]:+.3f}</pos-y><pos-z>{STATION_POSITIONS[34][2]:+.3f}</pos-z><terminal>ADS3000</terminal></station>
 <shuffle key="K">24,25,26,27,28,29,30,31,16,17,18,19,20,21,22,23,8,9,10,11,12,13,14,15,0,1,2,3,4,5,6,7</shuffle>
 <shuffle key="L">24,25,26,27,28,29,30,31,16,17,18,19,20,21,22,23,8,9,10,11,12,13,14,15,0,1,2,3,4,5,6,7</shuffle>
 <source name='{target_name}'><ra>{process_list[0]['ra']}</ra><dec>{process_list[0]['dec']}</dec></source>
@@ -507,7 +513,7 @@ def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root
     target_ra_str, target_dec_str = TARGETS[target_name]
     ant_meas, ant_ref = antenna, 34 if antenna == 32 else 32
 
-    transit_time_exact = get_transit_time(date_str, target_ra_str, target_dec_str)
+    transit_time_exact = get_transit_time(date_str, target_ra_str, target_dec_str, antenna)
     dummy_epoch = datetime(2026, 1, 1)
     total_seconds, center_offset = generate_prd_skd(dummy_epoch, is_dry_run=True, az_interval_sec=0.5, scan_axis=scan_axis, half_edge=half_edge)
     # ON点と移動時間を含む観測全体を南中の前後に均等に配置し、仰角変動を抑える。
