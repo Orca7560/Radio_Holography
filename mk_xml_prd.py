@@ -545,6 +545,7 @@ def launch_gui():
     frame.grid(sticky='nsew')
 
     date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
+    start_time_var = tk.StringVar()
     target_var = tk.StringVar(value=DEFAULT_TARGET)
     antenna_var = tk.IntVar(value=32)
     axis_var = tk.StringVar(value='az')
@@ -590,6 +591,10 @@ def launch_gui():
 
     ttk.Button(frame, text='参照...', command=browse).grid(row=6, column=3, padx=(8, 0))
 
+    ttk.Label(frame, text='開始時刻 (UTC・任意)').grid(row=7, column=0, sticky='w', pady=5)
+    ttk.Entry(frame, textvariable=start_time_var, width=16).grid(row=7, column=1, sticky='w', pady=5)
+    ttk.Label(frame, text='HH:MM:SS（空欄で自動計算）').grid(row=7, column=2, columnspan=2, sticky='w', padx=8)
+
     def finish(result=None, error=None):
         generate_button.config(state='normal')
         if error is not None:
@@ -599,7 +604,7 @@ def launch_gui():
             output_dir, transit, start, center = result
             status_var.set(f'生成完了: {output_dir}')
             messagebox.showinfo('生成完了',
-                f'出力先: {output_dir}\n南中（観測全体の中間の目標）: {format_utc_millis(transit)} UTC\n'
+                f'出力先: {output_dir}\n南中: {format_utc_millis(transit)} UTC\n'
                 f'中央走査 (Az=0, El=0): {format_utc_millis(center)} UTC\n'
                 f'開始: {start:%Y-%m-%d %H:%M:%S} UTC',
                 parent=root)
@@ -611,6 +616,12 @@ def launch_gui():
         except ValueError:
             messagebox.showerror('入力エラー', '観測日は YYYY-MM-DD 形式で入力してください。', parent=root)
             return
+        start_text = start_time_var.get().strip()
+        try:
+            start_time = datetime.strptime(f'{date_str} {start_text}', '%Y-%m-%d %H:%M:%S') if start_text else None
+        except ValueError:
+            messagebox.showerror('入力エラー', '開始時刻は HH:MM:SS 形式で入力してください。', parent=root)
+            return
         output_root = output_var.get().strip()
         if not output_root or not os.path.isdir(output_root):
             messagebox.showerror('入力エラー', '存在する保存先フォルダーを選んでください。', parent=root)
@@ -621,7 +632,7 @@ def launch_gui():
 
         def worker():
             try:
-                result = generate_schedule(date_str, name, antenna, axis, output_root, half_edge)
+                result = generate_schedule(date_str, name, antenna, axis, output_root, half_edge, start_time=start_time)
             except Exception as exc:
                 root.after(0, lambda exc=exc: finish(error=exc))
             else:
@@ -630,8 +641,8 @@ def launch_gui():
         threading.Thread(target=worker, daemon=True).start()
 
     generate_button = ttk.Button(frame, text='スケジュールを生成', command=generate)
-    generate_button.grid(row=7, column=1, sticky='w', pady=(14, 8))
-    ttk.Label(frame, textvariable=status_var, wraplength=550).grid(row=8, column=0, columnspan=4, sticky='w')
+    generate_button.grid(row=8, column=1, sticky='w', pady=(14, 8))
+    ttk.Label(frame, textvariable=status_var, wraplength=550).grid(row=9, column=0, columnspan=4, sticky='w')
     root.mainloop()
 
 
