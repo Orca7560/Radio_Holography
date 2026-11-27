@@ -273,6 +273,7 @@ def generate_prd_skd(obs_start_time, is_dry_run=False, output_dir=".", az_interv
         f"観測天体: {target_name}\n",
         f"観測開始 (UTC): {obs_start_time:%y/%j %H:%M:%S} / {obs_start_time:%y/%m/%d %H:%M:%S}\n",
         f"観測終了 (UTC): {obs_end_time:%y/%j %H:%M:%S} / {obs_end_time:%y/%m/%d %H:%M:%S}\n",
+        f"観測中間 (UTC): {format_utc_millis(obs_start_time + (obs_end_time - obs_start_time) / 2)}\n",
         f"観測所要時間: {total_seconds} sec\n",
         f"測定アンテナ: 山口 {ant_meas} m\n",
         f"参照アンテナ: 山口 {ant_ref} m\n",
@@ -509,10 +510,13 @@ def generate_schedule(date_str, selected_target, antenna, scan_axis, output_root
     transit_time_exact = get_transit_time(date_str, target_ra_str, target_dec_str)
     dummy_epoch = datetime(2026, 1, 1)
     total_seconds, center_offset = generate_prd_skd(dummy_epoch, is_dry_run=True, az_interval_sec=0.5, scan_axis=scan_axis, half_edge=half_edge)
-    # 従来と同じく観測全体（ON点・移動を含む）の中間時刻を南中に合わせる。
-    # 中央走査の原点通過時刻は表示用で、開始時刻の決定には使用しない。
-    midpoint_offset = timedelta(seconds=total_seconds / 2)
-    obs_start_time = (transit_time_exact - midpoint_offset + timedelta(microseconds=500000)).replace(microsecond=0) if start_time is None else start_time
+    # ON点と移動時間を含む観測全体を南中の前後に均等に配置し、仰角変動を抑える。
+    if start_time is None:
+        midpoint_offset = timedelta(seconds=total_seconds / 2)
+        obs_start_time = (transit_time_exact - midpoint_offset + timedelta(microseconds=500000)).replace(microsecond=0)
+    else:
+        # 既存観測の再生成時には、指定された開始時刻を使用する。
+        obs_start_time = start_time
     center_scan_time = obs_start_time + center_offset
     obs_code, output_dir = reserve_observation_directory(obs_start_time, output_root)
 
@@ -547,7 +551,7 @@ def launch_gui():
     half_edge_var = tk.BooleanVar(value=False)
     output_var = tk.StringVar(value=os.path.dirname(os.path.abspath(__file__)))
     coords_var = tk.StringVar()
-    status_var = tk.StringVar(value='観測日をUTCの日付で入力してください。')
+    status_var = tk.StringVar(value='観測日をUTCの日付で入力してください。観測全体の中間を南中に合わせます。')
 
     ttk.Label(frame, text='観測日 (UTC)').grid(row=0, column=0, sticky='w', pady=5)
     ttk.Entry(frame, textvariable=date_var, width=16).grid(row=0, column=1, sticky='w', pady=5)
@@ -595,8 +599,8 @@ def launch_gui():
             output_dir, transit, start, center = result
             status_var.set(f'生成完了: {output_dir}')
             messagebox.showinfo('生成完了',
-                f'出力先: {output_dir}\n南中: {format_utc_millis(transit)} UTC\n'
-                f'中央 (Az=0, El=0): {format_utc_millis(center)} UTC\n'
+                f'出力先: {output_dir}\n南中（観測全体の中間の目標）: {format_utc_millis(transit)} UTC\n'
+                f'中央走査 (Az=0, El=0): {format_utc_millis(center)} UTC\n'
                 f'開始: {start:%Y-%m-%d %H:%M:%S} UTC',
                 parent=root)
 
@@ -636,7 +640,7 @@ if __name__ == '__main__':
     if len(sys.argv) == 1 or sys.argv[1:] == ['--gui']:
         launch_gui()
     else:
-        parser = argparse.ArgumentParser(description='観測スケジュール生成 (引数なしでGUIを起動)')
+        parser = argparse.ArgumentParser(description='観測スケジュール生成（観測全体の中間を南中に合わせる。引数なしでGUIを起動）')
         parser.add_argument('--date', help='観測日 UTC (例: 2026-09-29)')
         parser.add_argument('--target-name', default=DEFAULT_TARGET, help='登録済み天体名')
         parser.add_argument('--list-targets', action='store_true', help='登録済み天体を表示')
@@ -679,7 +683,7 @@ if __name__ == '__main__':
             args.date, selected, args.antenna, args.scan_axis, args.output_dir, args.half_edge, args.start_time)
         print(f'天体: {selected}  測定アンテナ: {args.antenna} m  走査方向: {args.scan_axis.upper()}')
         print(f'南中: {format_utc_millis(transit)} UTC')
-        print(f'中央 (Az=0, El=0): {format_utc_millis(center)} UTC')
+        print(f'中央走査 (Az=0, El=0): {format_utc_millis(center)} UTC')
         print(f'開始: {start:%Y-%m-%d %H:%M:%S} UTC')
         print(f'出力先: {output_dir}')
 
